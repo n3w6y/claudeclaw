@@ -1,0 +1,2 @@
+{"timestamp": "2026-02-09T21:29:07.708885", "type": "date_mispricing", "market": "gpt ads", "action": "Sell YES on early (GPT ads by March 31?), Buy YES on late (GPT ads by December 31?)", "edge_pct": 99.55000000000001, "position_size": 5.0, "entry_price": null, "status": "OPEN", "venue": "simmer_simulated"}
+{"timestamp": "2026-02-09T21:29:07.709184", "type": "date_mispricing", "market": "gpt ads", "action": "Buy NO on early, Sell NO on late", "edge_pct": 99.55000000000001, "position_size": 5.0, "entry_price": null, "status": "OPEN", "venue": "simmer_simulated"}

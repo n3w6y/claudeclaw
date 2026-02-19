@@ -1,0 +1,9 @@
+{
+  "visual_crossing_api_key": "H4Q6WW7R4RW5LVHRDRMXEXPA8",
+  "weights": {
+    "open_meteo": 0.25,
+    "visual_crossing": 0.40,
+    "noaa": 0.35
+  },
+  "noaa_boost_for_us": true
+}

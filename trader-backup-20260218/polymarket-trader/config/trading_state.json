@@ -1,0 +1,37 @@
+{
+  "simulated_balance": 57.24,
+  "real_balance": 57.24,
+  "total_trades": 2,
+  "total_pnl": -2.72,
+  "open_positions": [],
+  "last_scan": "2026-02-17T12:00:00",
+  "trades_today": 0,
+  "daily_pnl": 0.0,
+  "starting_balance": 59.96,
+  "trade_history": [
+    {
+      "market": "Miami Feb 16 — Highest Temperature",
+      "side": "YES",
+      "entry_price": 0.30,
+      "shares": 3.40,
+      "cost": 1.02,
+      "return": 0.00,
+      "pnl": -1.02,
+      "status": "RESOLVED",
+      "exit_reason": "Resolved against position (outcome was 81°F or below)",
+      "date": "2026-02-16"
+    },
+    {
+      "market": "Chicago Feb 17 - ≥54°F",
+      "side": "NO",
+      "entry_price": 0.52,
+      "shares": 5.0,
+      "cost": 2.60,
+      "return": 0.90,
+      "pnl": -1.70,
+      "status": "CLOSED",
+      "exit_reason": "Edge evaporation — NOAA forecast changed to 61°F, manual exit",
+      "date": "2026-02-17"
+    }
+  ]
+}

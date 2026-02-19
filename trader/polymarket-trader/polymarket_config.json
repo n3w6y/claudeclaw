@@ -1,0 +1,8 @@
+{
+  "max_bet_note": "Position sizing is tier-based, see risk_manager.py",
+  "daily_limit": 100,
+  "autonomous": false,
+  "alert_threshold_pct": 2,
+  "whale_min_bet": 10000,
+  "tracked_wallets": []
+}

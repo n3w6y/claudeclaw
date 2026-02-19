@@ -1,0 +1,9 @@
+{
+  "max_order_usd": 55,
+  "daily_limit_usd": 100,
+  "require_confirmation": false,
+  "min_liquidity": 1000,
+  "allowed_markets": [],
+  "max_trades_per_session": 10,
+  "notes": "max_order_usd set to 55 (highest tier ceiling). Actual per-trade limits enforced by risk_manager.py BET_TIERS. Empty allowed_markets = all markets permitted."
+}

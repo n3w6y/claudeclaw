@@ -1,0 +1,21 @@
+{
+  "positions": [],
+  "exits": [],
+  "last_forecast_check": "2026-02-16T21:05:20.945818",
+  "forecast_checks": [
+    {
+      "position_token_id": "81994329119209953385122535270240929301377190286901970003324281322863792288116",
+      "market_name": "Chicago Feb 17 - \u226554\u00b0F",
+      "check_time": "2026-02-16T21:05:20.945802",
+      "entry_price": 0.52,
+      "current_price": 0.395,
+      "original_edge": 44.5,
+      "current_edge": 45.49999999999999,
+      "forecast_change_summary": "Forecasts unchanged",
+      "action": "HOLD",
+      "exit_executed": false,
+      "exit_order_id": null,
+      "exit_pnl": null
+    }
+  ]
+}

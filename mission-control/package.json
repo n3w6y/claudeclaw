@@ -1,0 +1,30 @@
+{
+  "name": "mission-control",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p ${PORT:-3000} -H ${HOST:-0.0.0.0}",
+    "build": "next build",
+    "start": "next start -p ${PORT:-3000} -H ${HOST:-0.0.0.0}",
+    "watcher": "NODE_OPTIONS='--no-network-family-autoselection' npx tsx scripts/watcher.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "chokidar": "^5.0.0",
+    "next": "^14.2.35",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^3.7.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.2.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.4.24",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

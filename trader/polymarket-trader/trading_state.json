@@ -1,0 +1,21 @@
+{
+  "last_updated": "2026-02-19T06:11:35.090563+00:00",
+  "wallet": "0x8DE0...9bD1",
+  "balance_usdc": 20.699598,
+  "open_orders": [],
+  "positions": [],
+  "strategy": {
+    "min_edge_pct": 20.0,
+    "position_size_usd": 5.0,
+    "max_simultaneous": 10,
+    "order_type": "GTC",
+    "ttl_minutes": 30,
+    "profit_target_pct": 30.0,
+    "stop_loss_pct": 20.0,
+    "exit_edge_threshold_pct": 10.0,
+    "min_resolution_hours": 4,
+    "price_range": "30-70\u00a2",
+    "confidence_floor": 0.8,
+    "min_liquidity_usd": 500
+  }
+}

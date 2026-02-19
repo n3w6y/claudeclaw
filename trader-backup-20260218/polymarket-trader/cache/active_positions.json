@@ -1,0 +1,17 @@
+[
+  {
+    "market": "Miami Feb 16 \u226481\u00b0F",
+    "city": "miami",
+    "date": "2026-02-16",
+    "question": "Will the highest temperature in Miami be 81\u00b0F or below on February 16?",
+    "side": "YES",
+    "price": 0.3,
+    "shares": 3.4,
+    "cost": 1.02,
+    "edge": 54.5,
+    "forecast_temp": "79.7\u00b0F",
+    "entry_time": "2026-02-16T11:59:00.824860",
+    "token_id": "[\"66768346322979326129125432887486149722345527679558012923804055846574356825311\", \"51686727250163511926066053820912003698036950015831531243151988763882848774959\"]",
+    "order_id": "0x83fd72890c2416c66a7dfecfdb44020ea147ba7dae5ef8892680901c5482e191"
+  }
+]
