@@ -541,12 +541,12 @@ function ingestTradingState(): boolean {
     const openOrders = data.open_orders ?? readOpenOrders();
 
     // Handle both formats: balance can be a number or { usdc: N }
-    const balance = typeof data.balance === 'object'
+    const balance = data.balance_usdc ?? (typeof data.balance === 'object'
       ? (data.balance?.usdc ?? data.balance?.available ?? 0)
-      : (data.balance ?? data.simulated_balance ?? 0);
+      : (data.balance ?? data.simulated_balance ?? 0));
 
     // Handle both field names: active_positions (new) or open_positions (old)
-    const positions = data.active_positions || data.open_positions || [];
+    const positions = data.active_positions || data.open_positions || data.positions || [];
 
     const totalTrades = data.total_trades ?? data.stats?.total_active_positions ?? 0;
     const totalPnl = data.total_pnl ?? 0;
