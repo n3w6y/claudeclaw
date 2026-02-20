@@ -1,5 +1,23 @@
 {
-  "positions": [],
+  "positions": [
+    {
+      "market_name": "Will the highest temperature in Seoul be 14\u00b0C or higher on February 21?",
+      "condition_id": "0xeace35b1d9995c415386e84c2e06e3e439aca280ea83ca1661a9814470ad21f3",
+      "token_id": "106789949698304904338953208608561686901293929703052937803320976865662415261865",
+      "side": "YES",
+      "entry_price": 0.30,
+      "shares": 14.3,
+      "cost_basis": 4.29,
+      "entry_date": "2026-02-20T00:00:00",
+      "order_id": "manual-import-feb21",
+      "original_edge": 20.0,
+      "threshold_temp_f": 14.0,
+      "city": "Seoul",
+      "market_date": "2026-02-21",
+      "is_us_market": false,
+      "forecast_sources": ""
+    }
+  ],
   "exits": [],
-  "last_updated": "2026-02-19T16:11:35.090907"
+  "last_updated": "2026-02-20T04:00:00"
 }

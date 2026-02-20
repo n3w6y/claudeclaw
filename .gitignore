@@ -26,3 +26,4 @@ trader/polymarket-trader/config/simmer_config.json
 trader-backup-20260218/polymarket-trader/config/simmer_config.json
 trader/polymarket-trader/config/simmer_config.json
 trader-backup-20260218/polymarket-trader/config/simmer_config.json
+*.Zone.Identifier

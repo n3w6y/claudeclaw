@@ -1,8 +1,34 @@
 {
-  "last_updated": "2026-02-19T06:11:35.090563+00:00",
+  "last_updated": "2026-02-20T04:16:32.932171+00:00",
   "wallet": "0x8DE0...9bD1",
-  "balance_usdc": 20.699598,
-  "open_orders": [],
+  "balance_usdc": 23.413998,
+  "open_orders": [
+    {
+      "order_id": "0x63457430e6f2b3eca3dc886e034a145dde6ed6aba765b7fb185823d9a8c9e370",
+      "condition_id": "0xeace35b1d9995c415386e84c2e06e3e439aca280ea83ca1661a9814470ad21f3",
+      "event_id": "216595",
+      "token_id": "106789949698304904338953208608561686901293929703052937803320976865662415261865",
+      "market": "Seoul - 2026-02-21",
+      "city": "Seoul",
+      "date": "2026-02-21",
+      "question": "Will the highest temperature in Seoul be 14\u00b0C or higher on February 21?",
+      "side": "YES",
+      "price": 0.305,
+      "size": 16.39,
+      "amount": 5.0,
+      "edge": 53.07045454545454,
+      "conf": 0.95,
+      "sources": [
+        "open_meteo",
+        "visual_crossing"
+      ],
+      "forecast_temp": "14.8\u00b0C (58.5\u00b0F)",
+      "temp_bucket": "14\u00b0C",
+      "time_placed": "2026-02-20T04:16:30.223593+00:00",
+      "ttl_expiry": "2026-02-20T04:46:30.223593+00:00",
+      "status": "OPEN"
+    }
+  ],
   "positions": [],
   "strategy": {
     "min_edge_pct": 20.0,

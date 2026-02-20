@@ -13,7 +13,7 @@ Run frequency: Every 5 minutes
 import sys
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Add scripts to path
 TRADER_DIR = Path(__file__).parent
@@ -176,7 +176,7 @@ def main():
 
         # Check TTL expiry
         ttl_expiry = datetime.fromisoformat(order['ttl_expiry'])
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         if now > ttl_expiry:
             print(f"  ⏰ TTL EXPIRED (placed {order['time_placed']}, expired {order['ttl_expiry']})")
