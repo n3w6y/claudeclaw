@@ -52,7 +52,7 @@ WEATHER_CITIES = [
     ("sydney",         -33.8688,  151.2093, False, "bom"),
     ("brisbane",       -27.4698,  153.0251, False, "bom"),
     ("melbourne",      -37.8136,  144.9631, False, "bom"),
-    ("seoul",           37.5665,  126.9780, False, None),
+    ("seoul",           37.5665,  126.9780, False, "kma"),
     ("london",          51.5074,   -0.1278, False, None),  # Phase 3: Met Office
     ("tokyo",           35.6762,  139.6503, False, None),  # Phase 3: JMA
     ("paris",           48.8566,    2.3522, False, None),  # Phase 3: Météo-France
@@ -300,6 +300,76 @@ def get_forecast_bom(lat, lon, date):
     return None
 
 
+
+def get_forecast_kma(lat, lon, date):
+    """
+    Get forecast from KMA (Korea Meteorological Administration) KIM 8km model.
+    Fetches 2m temperature across the target KST day and returns daily max in °C.
+    Requires KMA_API_KEY in environment.
+    """
+    import os
+    auth_key = os.environ.get("KMA_API_KEY") or os.environ.get("KMA_API")
+    if not auth_key:
+        # Try loading from .tinyclaw/polymarket.env
+        env_path = Path.home() / ".tinyclaw/polymarket.env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if line.startswith("KMA_API_KEY="):
+                    auth_key = line.split("=", 1)[1].strip()
+                    break
+    if not auth_key:
+        return None
+
+    from datetime import timedelta
+    # Seoul is UTC+9. KST day = UTC (day-1) 15:00 to UTC (day) 14:00
+    # Use 00UTC run from day before target date
+    base_date = date - timedelta(days=1)
+    tmfc = base_date.strftime("%Y%m%d") + "00"
+    # Fetch hours 15..38 (covering full KST day)
+    forecast_hours = list(range(15, 39, 3))
+
+    base_url = "https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-kim_nc_pt_txt2"
+    temps_k = []
+    for hf in forecast_hours:
+        url = (
+            f"{base_url}?group=KIMG&nwp=NE57&data=U&name=t2m"
+            f"&tmfc={tmfc}&hf={hf}&disp=A&lat={lat}&lon={lon}&authKey={auth_key}"
+        )
+        try:
+            req = Request(url, headers={"User-Agent": "WeatherArb/1.0"})
+            with urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            for line in raw.splitlines():
+                line = line.strip()
+                if line.startswith("#") or not line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 5:
+                    try:
+                        val_k = float(parts[4])
+                        if 220 < val_k < 340:  # sanity check — valid Kelvin range
+                            temps_k.append(val_k)
+                    except ValueError:
+                        pass
+        except Exception:
+            continue
+
+    if not temps_k:
+        return None
+
+    high_k = max(temps_k)
+    low_k  = min(temps_k)
+    high_c = high_k - 273.15
+    low_c  = low_k  - 273.15
+    return {
+        "source":  "kma",
+        "high_c":  round(high_c, 2),
+        "low_c":   round(low_c,  2),
+        "high_f":  round(high_c * 9/5 + 32, 2),
+        "low_f":   round(low_c  * 9/5 + 32, 2),
+        "is_local": True,
+    }
+
 # ============================================================================
 # Ensemble Forecasting
 # ============================================================================
@@ -340,6 +410,10 @@ def get_ensemble_forecast(lat, lon, date, is_us=False, local_source=None, city_n
         bom = get_forecast_bom(lat, lon, date)
         if bom:
             local_forecast = bom
+    elif local_source == "kma":
+        kma = get_forecast_kma(lat, lon, date)
+        if kma:
+            local_forecast = kma
 
     all_forecasts = global_forecasts + ([local_forecast] if local_forecast else [])
 
