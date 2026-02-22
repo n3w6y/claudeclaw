@@ -256,29 +256,39 @@ def check_exit_triggers(position: Position, current_price: float) -> tuple[str |
     Check all 4 exit conditions in priority order per TRADING_RULES.md.
     Priority: Time > Stop Loss > Edge Evaporation > Profit Target
     Returns (trigger_name, reason) or (None, None).
+
+    RESOLUTION PROXIMITY GUARD:
+    Within 8 hours of resolution, stop loss and edge evaporation are suppressed.
+    Near resolution, thin liquidity causes artificially low prices on winning positions.
+    Only time exit and profit target fire in the final 8 hours.
+    Consensus hold (checked before this function) handles hold-to-resolution decisions.
     """
     cost  = position.cost_basis
     value = position.shares * current_price
+    ttl   = hours_to_resolution(getattr(position, 'market_date', ''))
 
-    # 1. Time exit: < 4 hours to resolution
-    ttl = hours_to_resolution(getattr(position, 'market_date', ''))
-    if ttl is not None and ttl < 4:
+    # 1. Time exit: < 8 hours to resolution (TRADING_RULES.md Priority 1)
+    if ttl is not None and ttl < 8:
         return 'time', f"Time exit: {ttl:.1f}h to resolution"
 
-    # 2. Stop loss: value ≤ 80% of cost
-    if value <= cost * 0.80:
+    # Resolution proximity guard — suppress volatile exits in final 8h
+    near_resolution = ttl is not None and ttl < 8
+
+    # 2. Stop loss: value <= 80% of cost — suppressed near resolution
+    if not near_resolution and value <= cost * 0.80:
         pct = (value / cost - 1) * 100
-        return 'stop_loss', f"Stop loss: {pct:.1f}% (value ${value:.2f} ≤ floor ${cost * 0.80:.2f})"
+        return 'stop_loss', f"Stop loss: {pct:.1f}% (value ${value:.2f} <= floor ${cost * 0.80:.2f})"
 
-    # 3. Edge evaporation: recalculated edge < 10%
-    fresh_edge = recalculate_edge(position, current_price)
-    if fresh_edge < 10.0:
-        return 'edge_evap', f"Edge evaporation: {fresh_edge:.1f}% < 10%"
+    # 3. Edge evaporation: recalculated edge < 10% — suppressed near resolution
+    if not near_resolution:
+        fresh_edge = recalculate_edge(position, current_price)
+        if fresh_edge < 10.0:
+            return 'edge_evap', f"Edge evaporation: {fresh_edge:.1f}% < 10%"
 
-    # 4. Profit target: value ≥ 130% of cost
+    # 4. Profit target: value >= 130% of cost — always active
     if value >= cost * 1.30:
         pct = (value / cost - 1) * 100
-        return 'profit', f"Profit target: {pct:.1f}% (value ${value:.2f} ≥ target ${cost * 1.30:.2f})"
+        return 'profit', f"Profit target: {pct:.1f}% (value ${value:.2f} >= target ${cost * 1.30:.2f})"
 
     return None, None
 
