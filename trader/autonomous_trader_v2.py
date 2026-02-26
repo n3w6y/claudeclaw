@@ -143,17 +143,25 @@ def get_token_price(client, condition_id: str, side: str) -> tuple[str | None, f
     return None, None
 
 
-def get_batch_prices(client, positions: list) -> dict:
+def get_batch_prices(client, positions: list, for_exit: bool = False) -> tuple[dict, set]:
     """
-    Fetch current prices for multiple positions via the batch /prices endpoint.
-    Falls back to individual calls if batch fails.
-    Returns {token_id: price} — returns None for a token if the spread is
-    too wide (>40¢) since the mid price would be unreliable.
+    Fetch current prices for multiple positions via order book queries.
+    Returns (price_map, wide_spread_tokens):
+      - price_map: {token_id: price}
+      - wide_spread_tokens: set of token_ids where spread > 40¢ (price is best_bid, not mid)
+
+    When spread > 40¢:
+      - for_exit=False (default, used by scanner): returns None (mid unreliable for buying)
+      - for_exit=True  (used by monitor):         returns best_bid (conservative sell price)
+
+    This ensures positions with illiquid order books are still evaluated for
+    exit triggers rather than being silently skipped.
     """
     results = {}
+    wide_spread_tokens = set()
     token_ids = [str(p.token_id) for p in positions]
     if not token_ids:
-        return results
+        return results, wide_spread_tokens
 
     try:
         for pos in positions:
@@ -166,9 +174,15 @@ def get_batch_prices(client, positions: list) -> dict:
                 if best_bid and best_ask:
                     spread = best_ask - best_bid
                     if spread > 0.40:
-                        # Wide spread — mid is unreliable, skip
-                        print(f"  ⚠️  {pos.city} {pos.side}: wide spread {best_bid*100:.0f}¢/{best_ask*100:.0f}¢ (spread {spread*100:.0f}¢) — price unreliable, skipping")
-                        results[str(pos.token_id)] = None
+                        if for_exit and best_bid:
+                            # Wide spread — use best bid as conservative exit price
+                            print(f"  ⚠️  {pos.city} {pos.side}: wide spread {best_bid*100:.0f}¢/{best_ask*100:.0f}¢ (spread {spread*100:.0f}¢) — using best bid for exit eval")
+                            results[str(pos.token_id)] = best_bid
+                            wide_spread_tokens.add(str(pos.token_id))
+                        else:
+                            # Wide spread — mid is unreliable for entry decisions
+                            print(f"  ⚠️  {pos.city} {pos.side}: wide spread {best_bid*100:.0f}¢/{best_ask*100:.0f}¢ (spread {spread*100:.0f}¢) — price unreliable, skipping")
+                            results[str(pos.token_id)] = None
                         continue
                     mid = (best_bid + best_ask) / 2
                 elif best_bid:
@@ -185,7 +199,7 @@ def get_batch_prices(client, positions: list) -> dict:
     except Exception as e:
         print(f"  Batch price fetch error: {e}")
 
-    return results
+    return results, wide_spread_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -735,15 +749,27 @@ def monitor_positions(client, tracker: PositionTracker, balance_usdc: float = 0.
     log("| Market | Entry | Current | P&L % | Edge | Action |")
     log("|--------|-------|---------|-------|------|--------|")
 
-    # Batch price fetch
-    price_map = get_batch_prices(client, positions)
+    # Batch price fetch — for_exit=True uses best bid when spread is wide
+    price_map, wide_spread_tokens = get_batch_prices(client, positions, for_exit=True)
 
     for pos in positions:
         current_price = price_map.get(str(pos.token_id))
+        is_wide_spread = str(pos.token_id) in wide_spread_tokens
 
         if current_price is None:
-            print(f"  ⚠️  {pos.market_name} — could not fetch price, skipping")
-            log(f"| {pos.market_name} | {pos.entry_price * 100:.1f}¢ | N/A | N/A | N/A | SKIP (no price) |")
+            # Even with no price, force time exit if resolution is imminent
+            ttl = hours_to_resolution(getattr(pos, 'market_date', ''))
+            if ttl is not None and ttl < 2:
+                print(f"  🚨 {pos.market_name} — no price but resolution in {ttl:.1f}h, forcing exit at 1¢")
+                reason = f"Forced time exit: {ttl:.1f}h to resolution, no order book"
+                exit_record = execute_full_exit(client, pos, 0.01, reason, tracker)
+                if exit_record:
+                    log(f"| {pos.market_name} | {pos.entry_price * 100:.1f}¢ | 1.0¢ | -98.5% | N/A | EXIT (forced_time) |")
+                else:
+                    log(f"| {pos.market_name} | {pos.entry_price * 100:.1f}¢ | N/A | N/A | N/A | EXIT_FAILED (forced_time) |")
+            else:
+                print(f"  ⚠️  {pos.market_name} — could not fetch price, skipping")
+                log(f"| {pos.market_name} | {pos.entry_price * 100:.1f}¢ | N/A | N/A | N/A | SKIP (no price) |")
             continue
 
         cost    = pos.cost_basis
@@ -795,8 +821,11 @@ def monitor_positions(client, tracker: PositionTracker, balance_usdc: float = 0.
                             threshold = None
 
                         if threshold is not None:
+                            # When spread is wide, the best_bid is unreliable for P&L —
+                            # use entry_price so consensus hold isn't rejected on a fake loss
+                            ch_price = pos.entry_price if is_wide_spread else current_price
                             consensus_hold, consensus_reason = check_consensus_hold(
-                                pos, converted, threshold, pos_is_us, current_price
+                                pos, converted, threshold, pos_is_us, ch_price
                             )
         except Exception as e:
             consensus_reason = f"Consensus hold check error: {e}"
@@ -833,6 +862,15 @@ def monitor_positions(client, tracker: PositionTracker, balance_usdc: float = 0.
                     action = "CONSENSUS HOLD + TOPUP"
         else:
             # Fall through to normal exit logic
+            #
+            # Wide spread guard: when price is from an illiquid order book (e.g. 1¢/99¢),
+            # don't sell at the fake 1¢ bid. The position will resolve at its actual value.
+            # Only force exit if truly no bids AND resolution < 2h (handled in None branch above).
+            if is_wide_spread:
+                print(f"  ⚠️  {pos.market_name} — wide spread, no consensus ({consensus_reason[:60]}), holding for resolution")
+                log(f"| {pos.market_name} | {pos.entry_price * 100:.1f}¢ | {current_price * 100:.1f}¢ (wide) | N/A | N/A | HOLD (wide spread, no consensus) |")
+                continue
+
             trigger, reason = check_exit_triggers(pos, current_price)
 
             if trigger:
@@ -928,6 +966,26 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
 
     # Also track event_ids to avoid opposing sides in same event
     existing_event_ids = {getattr(p, 'event_id', '') for p in positions}
+
+    # --- Build stop-loss exit lookup for re-entry cool-off ---
+    # Maps condition_id → exit_price for stop-loss exits in the last 48 hours
+    stop_loss_exits = {}
+    for ex in tracker.exits:
+        if 'stop_loss' not in (ex.reason or '').lower():
+            continue
+        try:
+            exit_dt = datetime.fromisoformat(ex.exit_date)
+            if exit_dt.tzinfo is None:
+                exit_dt = exit_dt.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - exit_dt).total_seconds() / 3600
+            if age_hours < 48:
+                stop_loss_exits[ex.condition_id] = {
+                    'exit_price': ex.exit_price,
+                    'side': ex.side,
+                    'exit_date': ex.exit_date,
+                }
+        except Exception:
+            pass
 
     # --- Weather scan ---
     print("\n  Fetching weather events...")
@@ -1051,6 +1109,16 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
                 log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
                                 "opposing_side_held", False)
                 continue
+
+            # Re-entry cool-off: block re-entry after stop loss unless price is strictly better
+            if condition_id in stop_loss_exits:
+                sl = stop_loss_exits[condition_id]
+                sl_exit_price = sl['exit_price']
+                # Better price = lower entry cost for both YES and NO sides
+                if buy_price >= sl_exit_price:
+                    log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                    f"reentry_blocked_after_stop_loss (entry {buy_price*100:.0f}¢ >= sl_exit {sl_exit_price*100:.0f}¢)", False)
+                    continue
 
             # ✅ Passed all filters
             log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,

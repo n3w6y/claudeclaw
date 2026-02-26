@@ -75,18 +75,9 @@ Checks:
 
 ---
 
-## Trading Strategy Rules (Updated Feb 17, 2026)
+## Trading Strategy Rules
 
-See `trader/NEW_TRADING_RULES.md` for full specification.
-
-**Key changes from original strategy**:
-- Core: Trade forecast convergence, NOT hold to resolution
-- Entry: Minimum **20% edge** (raised from 10-15%)
-- Exit 1: **+30% profit target** → sell immediately
-- Exit 2: **-20% stop loss** → sell immediately, no exceptions
-- Exit 3: **Edge <10%** → sell regardless of P&L
-- Monitoring: Every **2 hours** (was 4 hours)
-- Never hold into resolution window (<4 hours to close)
+See [`trader/TRADING_RULES.md`](trader/TRADING_RULES.md) for the full specification (v3.0, single source of truth).
 
 ---
 

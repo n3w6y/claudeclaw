@@ -102,14 +102,21 @@ def monitor_positions(client, tracker: PositionTracker):
         log("No active positions")
         return
 
-    price_map = get_batch_prices(client, positions)
+    price_map, wide_spread_tokens = get_batch_prices(client, positions, for_exit=True)
 
     for pos in positions:
         current_price = price_map.get(str(pos.token_id))
+        is_wide_spread = str(pos.token_id) in wide_spread_tokens
         label = f"{pos.market_name}"
 
         if current_price is None:
-            log(f"{label} | SKIP | reason=no_price")
+            # Force time exit if resolution imminent and no price at all
+            ttl = hours_to_resolution(getattr(pos, 'market_date', ''))
+            if ttl is not None and ttl < 2:
+                log(f"{label} | FORCED_EXIT | reason=no_orderbook_resolution_imminent ({ttl:.1f}h)")
+                execute_full_exit(client, pos, 0.01, f"Forced time exit: {ttl:.1f}h, no order book", tracker)
+            else:
+                log(f"{label} | SKIP | reason=no_price")
             continue
 
         cost = pos.cost_basis
@@ -156,15 +163,21 @@ def monitor_positions(client, tracker: PositionTracker):
                             threshold = None
 
                         if threshold is not None:
+                            # Wide spread: use entry_price for P&L check (best_bid is unreliable)
+                            ch_price = pos.entry_price if is_wide_spread else current_price
                             consensus_hold, _ = check_consensus_hold(
-                                pos, converted, threshold, pos_is_us, current_price
+                                pos, converted, threshold, pos_is_us, ch_price
                             )
         except Exception as e:
             log(f"{label} | WARN | consensus_check_error: {e}")
 
         if consensus_hold:
-            edge = recalculate_edge(pos, current_price)
-            log(f"{label} | HOLD | reason=consensus_hold | edge={edge:.1f}% | pnl={pnl_pct:+.1f}%")
+            log(f"{label} | HOLD | reason=consensus_hold | pnl={pnl_pct:+.1f}%{' (wide spread)' if is_wide_spread else ''}")
+            continue
+
+        # Wide spread guard: don't sell at fake 1¢ bid, let resolution handle it
+        if is_wide_spread:
+            log(f"{label} | HOLD | reason=wide_spread_no_consensus | bid={current_price*100:.0f}¢")
             continue
 
         # ── Priorities 1-4: Exit triggers ─────────────────────────

@@ -1,7 +1,7 @@
 # TinyClaw Weather Trader — Rules & Operating Manual
 
-**Version**: 2.0
-**Effective**: 2026-02-19
+**Version**: 3.0
+**Effective**: 2026-02-27
 **Replaces**: All previous versions. This is the ONLY rules document.
 
 ---
@@ -63,6 +63,17 @@ If local national source and global model average disagree by > 2°C:
 - Skip market if bid-side liquidity < $500
 - Rationale: thin markets mean you can't exit at anything near quoted price
 
+### Re-entry Cool-off After Stop Loss
+- If a position was stopped out, re-entry on the same `conditionId` is only allowed if:
+  1. The new entry price is **strictly lower** than the stop-loss exit price (cheaper shares)
+  2. The market re-qualifies on fresh forecast data (normal entry filters apply)
+- Cool-off window: 48 hours from the stop-loss exit
+- Rationale: Re-entering at a worse price after a stop loss compounds losses. The Sao Paulo
+  case (stopped out NO at 50¢, re-entered NO at 67¢) showed this creates guaranteed losses
+  when the thesis was already wrong once.
+- Re-entry at a better price IS allowed — if market moved in your favor and thesis still holds
+  on new data, that's a valid new opportunity.
+
 ### Live Re-validation
 - After initial scan identifies a candidate, pull live CLOB price
 - Recalculate edge at live price — must still be ≥ 20% (or 25% for no-local markets)
@@ -101,7 +112,7 @@ to resolution ($0.90–0.97/share) exceeds selling early into thin liquidity (~$
 after slippage).
 
 ### Priority 1: Time Exit → SELL
-- Trigger: < 4 hours to market resolution
+- Trigger: < 8 hours to market resolution
 - Action: Sell at market (GTC order)
 - Rationale: Avoid binary resolution risk when consensus hold criteria aren't met
 
@@ -109,19 +120,35 @@ after slippage).
 - Trigger: Position value ≤ 80% of cost basis (-20%)
 - Example: Bought $5.00 → sell if value drops to $4.00
 - Action: Sell immediately (GTC order)
-- No exceptions. Loss aversion kills accounts.
+- **Suppressed in final 8 hours** (near resolution, thin liquidity causes
+  artificially low prices on winning positions — consensus hold handles this)
 
 ### Priority 3: Edge Evaporation → SELL
 - Trigger: Recalculated edge < 10%
 - Action: Sell regardless of P&L
 - Check: Pull fresh forecasts, recalculate edge vs current market price
 - Rationale: If edge is gone, position has no informational value
+- **Suppressed in final 8 hours** (same rationale as stop loss)
 
 ### Priority 4: Profit Target → SELL
 - Trigger: Position value ≥ 130% of cost basis (+30%)
 - Example: Bought $5.00 → sell if value reaches $6.50
 - Action: Sell (GTC order)
+- Always active, never suppressed
 - Rationale: Lock gains when consensus hold conditions aren't met
+
+### Wide Spread Exit Handling
+When the order book spread exceeds 40¢ (e.g. 1¢/99¢ in thin markets):
+- **Consensus hold still runs**: Use **entry price** (not the illiquid best_bid) for the
+  P&L check. The best bid in a wide-spread market doesn't reflect true position value.
+  If forecasts unanimously agree with margin, hold to resolution.
+- **If consensus hold fails**: Do NOT sell at the fake 1¢ bid. Hold for resolution anyway.
+  The illiquid price is not a real signal — selling at 1¢ would give away winning positions.
+- **If no bids exist at all** and resolution is < 2 hours away: force exit at 1¢ as last resort.
+- **For entry scanning**: Return no price (mid-price is unreliable for buying).
+- Rationale: The Sao Paulo post-mortem showed that positions in thin markets need monitoring
+  but must not be sold at illiquid prices. The best bid in a 1¢/99¢ spread is noise,
+  not signal.
 
 ---
 
@@ -146,12 +173,18 @@ loose (°C threshold on °F market).
 
 ## 4. Monitoring Schedule
 
-| Task | Frequency | What it does |
-|------|-----------|--------------|
-| Order monitoring | 5 minutes | Check GTC order fills and expiries |
-| Position monitoring | 10 minutes | Check all exit triggers for each position |
-| Opportunity scanning | 2 hours | Scan for new entry opportunities |
-| Forecast refresh | 2 hours | Pull fresh data from all sources |
+| Task | Frequency | Script | What it does |
+|------|-----------|--------|--------------|
+| Position monitoring | 10 minutes | `position_monitor.py` (cron) | Check all exit triggers + GTC order cancellation |
+| Trader health check | 10 minutes | `trader-monitor.sh` (cron) | Verify trader process is running |
+| Full trading cycle | 2 hours | `autonomous_trader_v2.py` (tmux) | Monitor positions + scan for new opportunities |
+
+### Position Monitor (`position_monitor.py`)
+- Runs via cron every 10 minutes
+- Checks exit triggers on all open positions (same priority order as main loop)
+- Checks unfilled GTC orders for cancellation (resolution imminent, market moved against)
+- Uses lock file to avoid conflicts with main trader loop
+- Does NOT scan for new opportunities or place new buy orders
 
 ---
 
@@ -194,6 +227,26 @@ Always keep a $5 minimum cash buffer — never go below $5 available.
 |---------|----------|--------|
 | Open-Meteo | Global | 25% |
 | Visual Crossing | Global | 35% (US) / 25% (non-US with local) |
+
+### METAR Observations (Real-Time)
+
+| Source | Coverage | Weight | Condition |
+|--------|----------|--------|-----------|
+| aviationweather.gov METAR | Global (ICAO stations) | 10% | > 6h to resolution |
+| aviationweather.gov METAR | Global (ICAO stations) | 30% | < 6h to resolution |
+
+- METAR provides current actual temperature at airport stations
+- Only used when observation is < 90 minutes old
+- Weight scales with proximity to resolution (more weight when forecast is verifiable)
+- Used for ensemble forecasting AND confirmation top-up decisions
+
+### METAR Confirmation Top-Up
+When METAR confirms our thesis near resolution (1–8h), a top-up GTC buy order is placed:
+- Position must be profitable (value > cost)
+- METAR `assess_resolution_confidence` must return `suggest_topup=True`
+- Market price must be below `max_topup_price` from confidence assessment
+- Available capital ≥ $5 and total deployed < 10 positions
+- One top-up per position maximum
 
 ### Cities with Local Sources
 
@@ -276,12 +329,14 @@ Hold duration: Xh Xm
 
 | File | Purpose | Updated by |
 |------|---------|-----------|
-| `positions_state.json` | All tracked positions + exits | autonomous_trader_v2.py |
-| `open_orders.json` | Currently open GTC orders | autonomous_trader_v2.py |
-| `trading_state.json` | Summary for Mission Control | autonomous_trader_v2.py |
-| `journal/YYYY-MM-DD.md` | Human-readable audit trail | All components |
+| `positions_state.json` | All tracked positions + exits | autonomous_trader_v2.py, position_monitor.py |
+| `open_orders.json` | Currently open GTC orders | autonomous_trader_v2.py, position_monitor.py |
+| `trading_state.json` | Summary for Mission Control | autonomous_trader_v2.py, position_monitor.py |
+| `journal/YYYY-MM-DD.md` | Human-readable audit trail | autonomous_trader_v2.py |
+| `scan_details.jsonl` | Per-opportunity scan evaluation log | autonomous_trader_v2.py |
+| `~/.tinyclaw/trader.lock` | Lock file for main loop (10-min mtime) | autonomous_trader_v2.py |
+| `~/.tinyclaw/logs/position_monitor.log` | Position monitor structured logs | position_monitor.py |
 | `config/weather_api.json` | API keys and BOM geohashes | Manual config |
-| `config/trading_limits.json` | Position size tiers | Manual config |
 
 ---
 
@@ -293,11 +348,12 @@ Hold duration: Xh Xm
 3. **Never trade without live price re-validation** — Gamma API prices can be stale
 4. **Never hold to resolution WITHOUT consensus hold criteria being met** — every source
    must agree, with sufficient margin, and a local source must be present
-5. **Never use cron jobs or TinyClaw scheduler for trading** — run in a visible tmux
-   window only
+5. **Never use cron for placing new buy orders** — main trader loop runs in tmux only.
+   Position monitoring and health checks use cron (read-only + exits).
 6. **Never embed rules in code comments that differ from this document** — this file is
    the single source of truth
-7. **Never average into a losing position** — if stopped out, the edge was wrong
+7. **Never re-enter a market at a worse price after a stop loss** — if stopped out at 50¢,
+   re-entry at ≥50¢ is blocked for 48 hours. Only re-enter at a strictly better price.
 8. **Never exceed 10 simultaneous positions** — includes open GTC orders
 9. **Never mix temperature units** — always compare in the market's native unit
 10. **Never trade a non-US market without a local source at the 20% edge threshold** —
@@ -307,11 +363,11 @@ Hold duration: Xh Xm
 
 ## 11. Activation Checklist
 
-Before starting `run_weather_strategy.sh`:
+Before starting `autonomous_trader_v2.py`:
 - [ ] `positions_state.json` reflects reality (run import if needed)
 - [ ] `open_orders.json` is empty or matches actual open orders
-- [ ] No cron jobs referencing weather/trader: `crontab -l`
-- [ ] No background trading processes: `ps aux | grep trader`
+- [ ] Cron has position_monitor.py and trader-monitor.sh: `crontab -l`
+- [ ] No duplicate trader processes: `ps aux | grep trader`
 - [ ] Balance is sufficient for at least 1 position + $5 buffer
 - [ ] VPN is connected (ProtonVPN → Cyprus)
 - [ ] Running in a visible tmux window, NOT via scheduler
