@@ -1,34 +1,8 @@
 {
-  "last_updated": "2026-02-26T21:59:36.603994+00:00",
+  "last_updated": "2026-02-26T22:50:05.407229+00:00",
   "wallet": "0x8DE0...9bD1",
   "balance_usdc": 31.132065,
-  "open_orders": [
-    {
-      "order_id": "0x5b7219451c793a949c54623dd7eed37b2d8f103d2cd7859d09d7b673852e1207",
-      "condition_id": "0xb1415d5888dceea33cec1827e7fd89a45a6e095d66ff491bc99a39e17864984a",
-      "event_id": "229734",
-      "token_id": "64570925866086136793889689701376723170216334263874854124935492613840944237140",
-      "market": "Ankara - 2026-02-27",
-      "city": "Ankara",
-      "date": "2026-02-27",
-      "question": "Will the highest temperature in Ankara be 3\u00b0C on February 27?",
-      "side": "NO",
-      "price": 0.64,
-      "size": 7.81,
-      "amount": 5.0,
-      "edge": 29.449999999999992,
-      "conf": 0.95,
-      "sources": [
-        "open_meteo",
-        "visual_crossing"
-      ],
-      "forecast_temp": "4.0\u00b0C (39.3\u00b0F)",
-      "temp_bucket": "3\u00b0C",
-      "time_placed": "2026-02-25T13:43:04.562765+00:00",
-      "ttl_expiry": "2026-02-25T14:13:04.562765+00:00",
-      "status": "OPEN"
-    }
-  ],
+  "open_orders": [],
   "positions": [],
   "strategy": {
     "min_edge_pct": 20.0,

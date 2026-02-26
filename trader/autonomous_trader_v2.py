@@ -92,9 +92,35 @@ def load_open_orders() -> list:
         return []
     try:
         with open(OPEN_ORDERS_FILE) as f:
-            return json.load(f)
+            orders = json.load(f)
     except Exception:
         return []
+
+    # Auto-expire orders past their TTL
+    now = datetime.now(timezone.utc)
+    changed = False
+    for o in orders:
+        if o.get('status') != 'OPEN':
+            continue
+        ttl_str = o.get('ttl_expiry', '')
+        if not ttl_str:
+            continue
+        try:
+            ttl_dt = datetime.fromisoformat(str(ttl_str))
+            if ttl_dt.tzinfo is None:
+                ttl_dt = ttl_dt.replace(tzinfo=timezone.utc)
+            if now > ttl_dt:
+                o['status'] = 'EXPIRED'
+                o['cancellation_reason'] = 'TTL_EXPIRED'
+                o['cancellation_time'] = now.isoformat()
+                changed = True
+        except Exception:
+            pass
+
+    if changed:
+        save_open_orders(orders)
+
+    return orders
 
 
 def save_open_orders(orders: list):

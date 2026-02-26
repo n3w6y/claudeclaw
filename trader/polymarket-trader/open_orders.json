@@ -408,7 +408,9 @@
     "temp_bucket": "3\u00b0C",
     "time_placed": "2026-02-25T13:43:04.562765+00:00",
     "ttl_expiry": "2026-02-25T14:13:04.562765+00:00",
-    "status": "OPEN"
+    "status": "CANCELLED",
+    "cancellation_reason": "RESOLUTION_IMMINENT",
+    "cancellation_time": "2026-02-26T22:00:07.570134+00:00"
   },
   {
     "order_id": "0x9e945dcd6225910fe98ad49955f35abe9790f3ff44d294bfd57ebefdf5c31c00",
