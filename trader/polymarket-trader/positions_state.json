@@ -75,25 +75,6 @@
       "forecast_sources": "open_meteo,visual_crossing,noaa",
       "icao": "",
       "topped_up": false
-    },
-    {
-      "market_name": "Will the highest temperature in Wellington be 21\u00b0C on February 26?",
-      "condition_id": "0x0ef7735147c7d396765293df289b5ca4129562ed09ca730c9411dbeaf7032c8d",
-      "token_id": "31770827393484210585526443775338374681164927130039768325646687875482648993242",
-      "side": "NO",
-      "entry_price": 0.65,
-      "shares": 7.69,
-      "cost_basis": 4.998500000000001,
-      "entry_date": "1772027170",
-      "order_id": "0x9e945dcd6225910fe98ad49955f35abe9790f3ff44d294bfd57ebefdf5c31c00",
-      "original_edge": 29.39999999999999,
-      "threshold_temp_f": 0.0,
-      "city": "Wellington",
-      "market_date": "2026-02-26",
-      "is_us_market": false,
-      "forecast_sources": "open_meteo,visual_crossing,metservice",
-      "icao": "",
-      "topped_up": false
     }
   ],
   "exits": [
@@ -126,7 +107,22 @@
       "exit_date": "2026-02-26T15:14:51.280810",
       "exit_order_id": "0x797fd987fdfd549f3ca529aec3ee33556a946bbf568f926a4c3c2e64e65f8369",
       "reason": "Stop loss: -99.8% (value $0.01 <= floor $4.00)"
+    },
+    {
+      "market_name": "Will the highest temperature in Wellington be 21\u00b0C on February 26?",
+      "condition_id": "0x0ef7735147c7d396765293df289b5ca4129562ed09ca730c9411dbeaf7032c8d",
+      "token_id": "31770827393484210585526443775338374681164927130039768325646687875482648993242",
+      "side": "NO",
+      "entry_price": 0.65,
+      "exit_price": 0.001,
+      "shares": 7.69,
+      "cost_basis": 4.998500000000001,
+      "proceeds": 0.007690000000000001,
+      "pnl": -4.990810000000001,
+      "exit_date": "2026-02-26T20:44:13.767258",
+      "exit_order_id": "0x1be202b8124d9998ff01bad07d5aefee00184cbf752e9302039b60a6e72cabcc",
+      "reason": "Time exit: -10.7h to resolution"
     }
   ],
-  "last_updated": "2026-02-26T18:45:56.799742"
+  "last_updated": "2026-02-26T20:46:44.296506"
 }
