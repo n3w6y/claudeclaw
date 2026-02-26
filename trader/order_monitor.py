@@ -174,43 +174,44 @@ def main():
         print(f"Checking: {market} - BUY {side} @ {price*100:.0f}¢")
         print(f"  Order ID: {order_id[:16]}...")
 
-        # Check TTL expiry
-        ttl_expiry = datetime.fromisoformat(order['ttl_expiry'])
         now = datetime.now(timezone.utc)
 
-        if now > ttl_expiry:
-            print(f"  ⏰ TTL EXPIRED (placed {order['time_placed']}, expired {order['ttl_expiry']})")
-            print(f"  Cancelling order...")
-
-            # Cancel the order
-            if cancel_order(client, order_id):
-                print(f"  ✅ Order cancelled")
-
-                # Update status
-                for o in all_orders:
-                    if o['order_id'] == order_id:
-                        o['status'] = 'CANCELLED'
-                        o['cancellation_reason'] = 'TTL_EXPIRED'
-                        o['cancellation_time'] = now.isoformat()
-
-                # Log cancellation
-                log_order_cancellation(order, "TTL_EXPIRED (30 min)")
-                cancelled_count += 1
-
-                # Update trading state
-                current_balance = get_balance(client)
-                all_positions = [vars(p) for p in tracker.get_active_positions()]
-                recent_activity = log_order_cancelled(order, "TTL_EXPIRED")
-                write_trading_state(current_balance, all_orders, all_positions, recent_activity)
-                print(f"  📊 Trading state updated")
-            else:
-                print(f"  ❌ Failed to cancel (may already be filled)")
-
-            print()
-            continue
-
-        # Check order status
+        # Always check fill status FIRST (order may have filled after TTL)
         status, fill_details = check_order_status(client, order_id)
+
+        # If order not found or not live, check TTL expiry for cancellation
+        if status in ('OPEN', 'LIVE', 'ERROR'):
+            ttl_expiry = datetime.fromisoformat(order['ttl_expiry'])
+            if now > ttl_expiry:
+                print(f"  ⏰ TTL EXPIRED (placed {order['time_placed']}, expired {order['ttl_expiry']})")
+                print(f"  Cancelling order...")
+
+                # Cancel the order
+                if cancel_order(client, order_id):
+                    print(f"  ✅ Order cancelled")
+
+                    # Update status
+                    for o in all_orders:
+                        if o['order_id'] == order_id:
+                            o['status'] = 'CANCELLED'
+                            o['cancellation_reason'] = 'TTL_EXPIRED'
+                            o['cancellation_time'] = now.isoformat()
+
+                    # Log cancellation
+                    log_order_cancellation(order, "TTL_EXPIRED (30 min)")
+                    cancelled_count += 1
+
+                    # Update trading state
+                    current_balance = get_balance(client)
+                    all_positions = [vars(p) for p in tracker.get_active_positions()]
+                    recent_activity = log_order_cancelled(order, "TTL_EXPIRED")
+                    write_trading_state(current_balance, all_orders, all_positions, recent_activity)
+                    print(f"  📊 Trading state updated")
+                else:
+                    print(f"  ❌ Failed to cancel (may already be filled)")
+
+                print()
+                continue
 
         if status == 'FILLED':
             print(f"  ✅ ORDER FILLED!")

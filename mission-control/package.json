@@ -6,7 +6,8 @@
     "dev": "next dev -p ${PORT:-3000} -H ${HOST:-0.0.0.0}",
     "build": "next build",
     "start": "next start -p ${PORT:-3000} -H ${HOST:-0.0.0.0}",
-    "watcher": "NODE_OPTIONS='--no-network-family-autoselection' npx tsx scripts/watcher.ts"
+    "watcher": "node scripts/watcher.js",
+    "watcher:build": "npx esbuild scripts/watcher.ts --bundle --platform=node --outfile=scripts/watcher.js --external:better-sqlite3"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",

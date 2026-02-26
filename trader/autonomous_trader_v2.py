@@ -31,6 +31,11 @@ from weather_arb import (
     calculate_probability, prepare_forecasts_for_market, get_ensemble_forecast,
 )
 from early_exit_manager import PositionTracker, Position, ExitRecord, execute_full_exit
+try:
+    from metar_source import assess_resolution_confidence
+    HAS_METAR = True
+except ImportError:
+    HAS_METAR = False
 from py_clob_client.clob_types import OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 
@@ -39,6 +44,7 @@ STATE_DIR    = TRADER_DIR / "polymarket-trader"
 POSITIONS_FILE   = STATE_DIR / "positions_state.json"
 OPEN_ORDERS_FILE = STATE_DIR / "open_orders.json"
 TRADING_STATE_FILE = STATE_DIR / "trading_state.json"
+SCAN_DETAILS_FILE  = STATE_DIR / "scan_details.jsonl"
 
 JOURNAL_DIR.mkdir(exist_ok=True)
 
@@ -54,6 +60,30 @@ def journal_path() -> Path:
 def log(text: str):
     with open(journal_path(), 'a') as f:
         f.write(text + "\n")
+
+
+def log_scan_detail(scan_id: str, scan_ts: str, opp: dict, side: str | None,
+                    edge: float, price: float, conf: float,
+                    rejection: str | None, qualified: bool = False):
+    """Append a single opportunity evaluation to scan_details.jsonl."""
+    import json as _json
+    row = {
+        "scan_id": scan_id,
+        "scan_timestamp": scan_ts,
+        "city": opp.get("city", ""),
+        "market": opp.get("market_question", ""),
+        "side": side,
+        "edge": round(edge, 2),
+        "price": round(price, 4),
+        "confidence": round(conf, 4),
+        "sources": ",".join(opp.get("forecast_sources", [])),
+        "forecast_temp": str(opp.get("forecast_temp", "")),
+        "liquidity": opp.get("liquidity", 0) or 0,
+        "rejection_reason": rejection,
+        "qualified": qualified,
+    }
+    with open(SCAN_DETAILS_FILE, "a") as f:
+        f.write(_json.dumps(row) + "\n")
 
 
 def load_open_orders() -> list:
@@ -116,7 +146,8 @@ def get_batch_prices(client, positions: list) -> dict:
     """
     Fetch current prices for multiple positions via the batch /prices endpoint.
     Falls back to individual calls if batch fails.
-    Returns {token_id: price}.
+    Returns {token_id: price} — returns None for a token if the spread is
+    too wide (>40¢) since the mid price would be unreliable.
     """
     results = {}
     token_ids = [str(p.token_id) for p in positions]
@@ -124,8 +155,6 @@ def get_batch_prices(client, positions: list) -> dict:
         return results
 
     try:
-        # py-clob-client supports get_prices_history but not a batch mid endpoint directly.
-        # Use get_order_book per token — still one call per token but centralised here.
         for pos in positions:
             try:
                 ob = client.get_order_book(str(pos.token_id))
@@ -134,13 +163,18 @@ def get_batch_prices(client, positions: list) -> dict:
                 best_bid = float(bids[0].price) if bids else None
                 best_ask = float(asks[0].price) if asks else None
                 if best_bid and best_ask:
+                    spread = best_ask - best_bid
+                    if spread > 0.40:
+                        # Wide spread — mid is unreliable, skip
+                        print(f"  ⚠️  {pos.city} {pos.side}: wide spread {best_bid*100:.0f}¢/{best_ask*100:.0f}¢ (spread {spread*100:.0f}¢) — price unreliable, skipping")
+                        results[str(pos.token_id)] = None
+                        continue
                     mid = (best_bid + best_ask) / 2
                 elif best_bid:
                     mid = best_bid
                 elif best_ask:
                     mid = best_ask
                 else:
-                    # Fall back to market endpoint price
                     _, fallback = get_token_price(client, pos.condition_id, pos.side)
                     mid = fallback
                 results[str(pos.token_id)] = mid
@@ -156,6 +190,118 @@ def get_batch_prices(client, positions: list) -> dict:
 # ---------------------------------------------------------------------------
 # STEP 1: STARTUP
 # ---------------------------------------------------------------------------
+
+def _resolve_phantoms(client, tracker: PositionTracker, phantom_orders: list) -> set:
+    """
+    Phantom orders are in local 'OPEN' state but not found on CLOB.
+    Possible causes:
+      1. Filled while we were offline
+      2. Expired/canceled
+
+    Check client.get_trades() to see if they filled. If so, create Position.
+    Returns set of order_ids that were filled.
+    """
+    if not phantom_orders:
+        return set()
+
+    # Fetch all trades for this wallet
+    try:
+        trades = client.get_trades() or []
+    except Exception as e:
+        print(f"    ⚠️  Could not fetch trades to resolve phantoms: {e}")
+        return set()
+
+    # Build map: order_id -> fills
+    # GTC maker orders appear in maker_orders[] array, not at top level
+    fills_by_order = {}
+    for t in trades:
+        # Top-level taker order id
+        taker_oid = t.get('taker_order_id') or t.get('order_id') or t.get('orderID')
+        if taker_oid:
+            fills_by_order.setdefault(taker_oid, []).append({
+                'size': float(t.get('size', 0)),
+                'price': float(t.get('price', 0)),
+                'timestamp': t.get('match_time') or t.get('timestamp'),
+            })
+        # Maker orders — our GTC limit orders appear here
+        for mo in t.get('maker_orders', []):
+            mo_oid = mo.get('order_id')
+            if mo_oid:
+                fills_by_order.setdefault(mo_oid, []).append({
+                    'size': float(mo.get('matched_amount', 0)),
+                    'price': float(mo.get('price', 0)),
+                    'timestamp': t.get('match_time') or t.get('timestamp'),
+                })
+
+    filled_ids = set()
+
+    for order in phantom_orders:
+        order_id = order.get('order_id')
+        if not order_id:
+            continue
+
+        fills = fills_by_order.get(order_id, [])
+        if not fills:
+            continue
+
+        # Aggregate fills for this order
+        total_shares = sum(float(f.get('size', 0)) for f in fills)
+        total_cost = sum(float(f.get('size', 0)) * float(f.get('price', 0)) for f in fills)
+        if total_shares == 0:
+            continue
+
+        actual_entry = total_cost / total_shares
+        first_fill_time = fills[0].get('timestamp') or fills[0].get('matched_time')
+
+        # Extract metadata from order record
+        city = order.get('city', 'Unknown')
+        side = order.get('side', 'NO')
+        token_id = order.get('token_id', '')
+        market_date_str = order.get('date', '') or order.get('market_date', '')
+        sources_list_raw = order.get('sources', [])
+        if isinstance(sources_list_raw, list):
+            sources_str = ','.join(sources_list_raw)
+        else:
+            sources_str = str(sources_list_raw) if sources_list_raw else ''
+
+        # Determine if US market from sources (NOAA = US market)
+        sources_list = order.get('sources', [])
+        if isinstance(sources_list, str):
+            sources_list = sources_list.split(',')
+        is_us = any('noaa' in s.lower() for s in sources_list)
+
+        # Build holding record
+        holding = {
+            'shares': total_shares,
+            'cost': total_cost,
+            'time': first_fill_time,
+        }
+
+        # Create Position
+        position = Position(
+            market_name=order.get('question', f"{city} {side}")[:80],
+            condition_id=order.get('condition_id', ''),
+            token_id=token_id,
+            side=side,
+            entry_price=actual_entry,
+            shares=holding['shares'],
+            cost_basis=holding['cost'],
+            entry_date=holding['time'] or datetime.now(timezone.utc).isoformat(),
+            order_id=order_id,
+            original_edge=order.get('edge', 10.0),
+            threshold_temp_f=0.0,  # Not stored in order — edge evap still uses original_edge
+            city=city,
+            market_date=market_date_str,
+            is_us_market=is_us,
+            forecast_sources=sources_str,
+            icao=order.get('icao', ''),
+        )
+
+        tracker.add_position(position)
+        filled_ids.add(order_id)
+        print(f"    ✅ FILLED → position created: {city} {side} @ {actual_entry * 100:.1f}¢  {holding['shares']:.2f} shares  cost ${holding['cost']:.2f}")
+
+    return filled_ids
 
 def startup():
     """
@@ -199,16 +345,18 @@ def startup():
     # Sync check: warn if local state diverges from CLOB reality
     phantom = local_open_ids - clob_open_ids  # in local but not on CLOB
     if phantom:
-        print(f"\n⚠️  SYNC WARNING: {len(phantom)} local 'OPEN' orders not found on CLOB:")
-        for oid in phantom:
-            print(f"    {oid[:20]}...")
-        # Mark phantoms as expired so they don't block capacity
-        for o in live_local:
+        print(f"\n⚠️  SYNC: {len(phantom)} local 'OPEN' orders not found on CLOB — checking for fills...")
+        phantom_order_records = [o for o in live_local if o.get('order_id') in phantom]
+        filled_ids = _resolve_phantoms(client, tracker, phantom_order_records)
+        for o in open_orders:
             if o.get('order_id') in phantom:
-                o['status'] = 'EXPIRED'
+                if o.get('order_id') in filled_ids:
+                    o['status'] = 'FILLED'
+                else:
+                    o['status'] = 'EXPIRED'
+                    print(f"    ↩️  EXPIRED (unfilled): {o.get('city','?')} {o.get('side')} {o.get('order_id','')[:20]}...")
         save_open_orders(open_orders)
         live_local = [o for o in open_orders if o.get('status') == 'OPEN']
-        print("    Marked as EXPIRED — continuing")
 
     total_deployed = len(positions) + len(live_local)
     print(f"\nPositions  : {len(positions)}")
@@ -407,10 +555,169 @@ def check_consensus_hold(
     )
 
 
-def monitor_positions(client, tracker: PositionTracker):
+def check_confirmation_topup(
+    client, pos: Position, current_price: float,
+    hrs_to_res: float, tracker: PositionTracker,
+    balance_usdc: float, total_deployed: int,
+):
+    """
+    If METAR confirms our thesis, place a top-up GTC buy order.
+
+    Conditions (ALL must be true):
+    1. hours_to_resolution between 1 and 8
+    2. position has icao
+    3. assess_resolution_confidence returns suggest_topup=True
+    4. current market price < max_topup_price
+    5. position is profitable
+    6. topped_up is False (only once per position)
+    7. available capital >= $5
+    8. total deployed < 10
+
+    Returns True if top-up was placed, False otherwise.
+    """
+    if not HAS_METAR:
+        return False
+    if pos.topped_up:
+        return False
+    if not getattr(pos, 'icao', ''):
+        return False
+    if hrs_to_res is None or hrs_to_res < 1 or hrs_to_res > 8:
+        return False
+    if total_deployed >= 10:
+        return False
+    if balance_usdc < 5:
+        return False
+
+    # Position must be profitable
+    value = pos.shares * current_price
+    if value <= pos.cost_basis:
+        return False
+
+    # Parse threshold from temp_bucket or threshold_temp_f
+    threshold_c = None
+    threshold_f = getattr(pos, 'threshold_temp_f', 0.0)
+    if threshold_f and threshold_f > 0:
+        threshold_c = (threshold_f - 32) * 5 / 9 if getattr(pos, 'is_us_market', True) else threshold_f
+    if threshold_c is None or threshold_c == 0:
+        # Try to infer from order records
+        orders = load_open_orders()
+        for o in orders:
+            if o.get('order_id') == pos.order_id:
+                bucket = o.get('temp_bucket', '')
+                import re
+                m = re.match(r'([\d.]+)°([CF])', bucket)
+                if m:
+                    val = float(m.group(1))
+                    if m.group(2) == 'F':
+                        threshold_c = (val - 32) * 5 / 9
+                    else:
+                        threshold_c = val
+                break
+
+    if threshold_c is None or threshold_c == 0:
+        return False
+
+    # Assess resolution confidence via METAR
+    try:
+        confidence = assess_resolution_confidence(
+            icao=pos.icao,
+            threshold_temp_c=threshold_c,
+            side=pos.side,
+            hours_to_resolution=hrs_to_res,
+        )
+    except Exception as e:
+        print(f"    METAR confidence check failed: {e}")
+        return False
+
+    if not confidence.get('suggest_topup'):
+        return False
+
+    max_price = confidence.get('max_topup_price', 0.0)
+    if current_price >= max_price:
+        return False
+
+    # Calculate top-up size
+    available_capital = balance_usdc - 5.0  # keep $5 buffer
+    topup_amount = min(pos.cost_basis, available_capital * 0.25, 10.0)
+    if topup_amount < 1.0:
+        return False
+
+    topup_size = round(topup_amount / current_price, 2)
+    if topup_size <= 0:
+        return False
+
+    # Place GTC buy order
+    try:
+        order_args = OrderArgs(
+            token_id=str(pos.token_id),
+            price=current_price,
+            size=topup_size,
+            side=BUY,
+        )
+        signed = client.create_order(order_args)
+        resp = client.post_order(signed, orderType=OrderType.GTC)
+        order_id = resp.get('orderID', 'N/A')
+
+        now = datetime.now(timezone.utc)
+        ttl = now + timedelta(minutes=30)
+
+        order_record = {
+            'order_id':     order_id,
+            'condition_id': pos.condition_id,
+            'event_id':     '',
+            'token_id':     str(pos.token_id),
+            'market':       pos.market_name,
+            'city':         pos.city,
+            'date':         getattr(pos, 'market_date', ''),
+            'question':     f"TOPUP: {pos.market_name}"[:80],
+            'side':         pos.side,
+            'price':        current_price,
+            'size':         topup_size,
+            'amount':       topup_amount,
+            'edge':         0.0,
+            'conf':         1.0,
+            'sources':      ['metar_confirmation'],
+            'forecast_temp': '',
+            'temp_bucket':  '',
+            'icao':         pos.icao,
+            'time_placed':  now.isoformat(),
+            'ttl_expiry':   ttl.isoformat(),
+            'status':       'OPEN',
+        }
+
+        all_orders = load_open_orders()
+        all_orders.append(order_record)
+        save_open_orders(all_orders)
+
+        # Mark position as topped up
+        pos.topped_up = True
+        tracker.save_state()
+
+        note = confidence.get('confidence_note', '')
+        print(f"  🔺 CONFIRMATION TOP-UP: {pos.city} {pos.side} "
+              f"${topup_amount:.2f} @ {current_price * 100:.1f}¢  "
+              f"order {order_id}")
+        print(f"     {note}")
+
+        log(f"\n## Confirmation Top-Up — {now.strftime('%H:%M:%S')}")
+        log(f"Market: {pos.market_name}")
+        log(f"Side: {pos.side}")
+        log(f"METAR: {note}")
+        log(f"Top-up: ${topup_amount:.2f} @ {current_price * 100:.1f}¢ ({topup_size:.2f} shares)")
+        log(f"Order: {order_id}")
+
+        return True
+
+    except Exception as e:
+        print(f"    ❌ Top-up order failed: {e}")
+        return False
+
+
+def monitor_positions(client, tracker: PositionTracker, balance_usdc: float = 0.0):
     """
     Fetch fresh prices for all positions using batch order-book calls,
     then check 4 exit triggers in priority order.
+    After exit checks, evaluate METAR confirmation top-ups for held positions.
     """
     positions = tracker.get_active_positions()
 
@@ -512,6 +819,17 @@ def monitor_positions(client, tracker: PositionTracker):
             log(f"Action: 🏁 {consensus_reason}")
             log(f"Expected payout: ${expected_payout:.2f}")
             log(f"Expected profit: ${expected_profit:+.2f} ({expected_profit / pos.cost_basis * 100:+.1f}%)")
+
+            # --- METAR confirmation top-up during consensus hold ---
+            if HAS_METAR and not pos.topped_up and getattr(pos, 'icao', ''):
+                open_orders = load_open_orders()
+                live_orders = [o for o in open_orders if o.get('status') == 'OPEN']
+                total_dep = len(positions) + len(live_orders)
+                if check_confirmation_topup(
+                    client, pos, current_price, hours_left,
+                    tracker, balance_usdc, total_dep,
+                ):
+                    action = "CONSENSUS HOLD + TOPUP"
         else:
             # Fall through to normal exit logic
             trigger, reason = check_exit_triggers(pos, current_price)
@@ -534,6 +852,18 @@ def monitor_positions(client, tracker: PositionTracker):
             else:
                 action = "HOLD"
                 print(f"  HOLD  {pos.market_name}  {current_price * 100:.1f}¢  {pnl_pct:+.1f}%  edge {edge:.1f}%")
+
+                # --- METAR confirmation top-up check ---
+                if HAS_METAR and not pos.topped_up and getattr(pos, 'icao', ''):
+                    hrs = hours_to_resolution(getattr(pos, 'market_date', ''))
+                    open_orders = load_open_orders()
+                    live_orders = [o for o in open_orders if o.get('status') == 'OPEN']
+                    total_dep = len(positions) + len(live_orders)
+                    if check_confirmation_topup(
+                        client, pos, current_price, hrs,
+                        tracker, balance_usdc, total_dep,
+                    ):
+                        action = "HOLD + TOPUP"
 
         log(f"| {pos.market_name} | {pos.entry_price * 100:.1f}¢ | {current_price * 100:.1f}¢ "
             f"| {pnl_pct:+.1f}% | {edge:.1f}% | {action} |")
@@ -603,6 +933,9 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
     events = get_weather_events(days_ahead=3)
     qualifying = []
 
+    scan_id = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+    scan_ts = datetime.now(timezone.utc).isoformat()
+
     for event in events:
         parsed = parse_weather_event(event)
         if not parsed:
@@ -635,32 +968,42 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
             is_us = 'noaa' in [s.lower() for s in sources]
             has_local = opp.get('local_source') is not None
             action = opp.get('action', '')
+            side = "YES" if "YES" in action.upper() else "NO"
+            buy_price = yes_p if side == "YES" else no_p
 
             # --- Entry filter per TRADING_RULES.md ---
 
-            # Confidence floor ≥80%
+            # Confidence floor ≥80% (below this is noise — don't log)
             if conf < 0.80:
                 continue
 
             # Disagrement flag: local and global disagree by >2°C → blocks trade
             if opp.get('local_disagrees', False):
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                "local_global_disagree", False)
                 continue
 
             # Edge threshold: ≥20% for US + non-US with local source; ≥25% without local
             min_edge = 20.0 if (is_us or has_local) else 25.0
             if edge < min_edge:
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                f"edge_{edge:.1f}%_below_{min_edge:.0f}%_min", False)
                 continue
 
             # Price range 30–70¢ for the side we're buying
-            side = "YES" if "YES" in action.upper() else "NO"
-            buy_price = yes_p if side == "YES" else no_p
             if not (0.30 <= buy_price <= 0.70):
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                f"price_{buy_price*100:.0f}c_outside_30-70c", False)
                 continue
 
             # Source requirements
             if is_us and num_sources < 3:
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                f"us_needs_3_sources_has_{num_sources}", False)
                 continue
             if not is_us and num_sources < 2:
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                f"non_us_needs_2_sources_has_{num_sources}", False)
                 continue
 
             # Non-US: sources must agree within 1°C
@@ -669,11 +1012,15 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
                 if indiv:
                     temps = [f['high_c'] for f in indiv]
                     if max(temps) - min(temps) > 1.0:
+                        log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                        f"source_spread_{max(temps)-min(temps):.1f}C_over_1C", False)
                         continue
 
             # Liquidity ≥$500
             liquidity = opp.get('liquidity', 0) or 0
             if liquidity < 500:
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                f"liquidity_${liquidity:.0f}_below_$500", False)
                 continue
 
             # Resolve condition_id from the event's raw market data
@@ -688,15 +1035,25 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
                     break
 
             if not condition_id:
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                "no_condition_id", False)
                 continue
 
             # Duplicate check
             if condition_id in existing_cids:
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                "duplicate_position", False)
                 continue
 
             # Opposing side check: skip if we hold any position in the same event
             if event_id and event_id in existing_event_ids:
+                log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                                "opposing_side_held", False)
                 continue
+
+            # ✅ Passed all filters
+            log_scan_detail(scan_id, scan_ts, opp, side, edge, buy_price, conf,
+                            None, True)
 
             qualifying.append({
                 'condition_id': condition_id,
@@ -714,6 +1071,7 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
                 'forecast_prob': opp.get('forecast_prob', 0.5),
                 'forecast_temp': opp.get('forecast_temp', ''),
                 'temp_bucket': opp.get('temp_bucket', ''),
+                'icao': opp.get('icao', ''),
                 'individual_forecasts': opp.get('individual_forecasts', []),
                 'local_source': opp.get('local_source'),
                 'local_disagrees': opp.get('local_disagrees', False),
@@ -757,7 +1115,7 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
         # Re-calculate edge at live price
         fp = opp['forecast_prob']
         if side == 'NO':
-            fresh_edge = (fp - fresh_price) * 100
+            fresh_edge = ((1 - fp) - fresh_price) * 100
         else:
             fresh_edge = (fp - fresh_price) * 100
         fresh_edge = fresh_edge * opp['conf']  # confidence-adjusted
@@ -803,6 +1161,7 @@ def scan_and_trade(client, balance_usdc: float, tracker: PositionTracker):
                 'sources'     : opp['sources'],
                 'forecast_temp': opp['forecast_temp'],
                 'temp_bucket' : opp['temp_bucket'],
+                'icao'        : opp.get('icao', ''),
                 'time_placed' : now.isoformat(),
                 'ttl_expiry'  : ttl.isoformat(),
                 'status'      : 'OPEN',
@@ -906,8 +1265,8 @@ def main():
         update_state(client, tracker)
         return
 
-    # STEP 2: Monitor existing positions for exit triggers
-    monitor_positions(client, tracker)
+    # STEP 2: Monitor existing positions for exit triggers + METAR confirmation top-ups
+    monitor_positions(client, tracker, balance_usdc)
 
     # STEP 3: Scan for new opportunities (reload balance after any exits)
     fresh_bal = get_balance(client)
@@ -918,4 +1277,44 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import io
+
+    # Tee stdout/stderr to ~/.tinyclaw/logs/trader.log
+    LOG_PATH = Path(os.path.expanduser("~/.tinyclaw/logs/trader.log"))
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    class Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+        def write(self, data):
+            for s in self.streams:
+                try:
+                    s.write(data)
+                    s.flush()
+                except Exception:
+                    pass
+        def flush(self):
+            for s in self.streams:
+                try:
+                    s.flush()
+                except Exception:
+                    pass
+
+    log_file = open(LOG_PATH, 'a')
+    sys.stdout = Tee(sys.__stdout__, log_file)
+    sys.stderr = Tee(sys.__stderr__, log_file)
+
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print(f"\n[ERROR] Unhandled exception: {e}")
+            import traceback
+            traceback.print_exc()
+            print("Sleeping 60s before retry...")
+            time.sleep(60)
+            continue
+        next_run = datetime.now(timezone.utc) + timedelta(hours=2)
+        print(f"\nSleeping 2h — next scan at {next_run:%Y-%m-%d %H:%M} UTC")
+        print("=" * 70)
+        time.sleep(7200)

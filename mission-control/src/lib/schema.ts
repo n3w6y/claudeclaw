@@ -62,6 +62,25 @@ export function initSchema(db: Database.Database) {
       file_count INTEGER DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS scan_details (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scan_id TEXT NOT NULL,
+      scan_timestamp TEXT NOT NULL,
+      city TEXT,
+      market TEXT,
+      side TEXT,
+      edge REAL,
+      price REAL,
+      confidence REAL,
+      sources TEXT,
+      forecast_temp TEXT,
+      liquidity REAL,
+      rejection_reason TEXT,
+      qualified INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_scan_details_scan ON scan_details(scan_id);
+    CREATE INDEX IF NOT EXISTS idx_scan_details_ts ON scan_details(scan_timestamp DESC);
+
     CREATE TABLE IF NOT EXISTS balance_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL,

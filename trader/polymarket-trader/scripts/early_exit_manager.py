@@ -38,6 +38,8 @@ class Position:
     market_date: str = ""  # Market resolution date
     is_us_market: bool = True  # Whether US market
     forecast_sources: str = ""  # Comma-separated source list
+    icao: str = ""  # ICAO station code for METAR
+    topped_up: bool = False  # Whether confirmation top-up has been placed
 
 
 @dataclass

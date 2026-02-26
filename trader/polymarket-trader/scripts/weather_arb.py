@@ -34,6 +34,14 @@ try:
 except ImportError:
     HAS_GEOHASH2 = False
 
+from datetime import timezone as _tz
+
+try:
+    from metar_source import get_metar_observation
+    HAS_METAR = True
+except ImportError:
+    HAS_METAR = False
+
 GAMMA_API = "https://gamma-api.polymarket.com"
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 VISUAL_CROSSING_API = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
@@ -67,6 +75,66 @@ WEATHER_CITIES = [
     ("seattle",         47.6062, -122.3321, True,  "noaa"),
     ("dallas",          32.7767,  -96.7970, True,  "noaa"),
 ]
+
+# Fallback ICAO map for markets where Wunderground URL is missing
+# Verified codes (2026-02-26):
+#   London: EGLC (verified from live market)
+#   Paris: LFPG (verified from live market)
+#   Buenos Aires: SAEZ (verified from live market)
+#   Tokyo: RJTT (verified via METAR availability - Haneda Airport)
+ICAO_FALLBACK = {
+    'New York':     'KLGA',
+    'Nyc':          'KLGA',
+    'Chicago':      'KORD',
+    'Los Angeles':  'KLAX',
+    'Miami':        'KMIA',
+    'Atlanta':      'KATL',
+    'Dallas':       'KDFW',
+    'Houston':      'KIAH',
+    'Seattle':      'KSEA',
+    'Denver':       'KDEN',
+    'Phoenix':      'KPHX',
+    'New Orleans':  'KMSY',
+    'Sao Paulo':    'SBGR',
+    'Seoul':        'RKSI',
+    'Wellington':   'NZWN',
+    'Auckland':     'NZAA',
+    'Sydney':       'YSSY',
+    'Melbourne':    'YMML',
+    'Brisbane':     'YBBN',
+    'Tokyo':        'RJTT',  # Verified 2026-02-26
+    'London':       'EGLC',  # Verified 2026-02-26
+    'Paris':        'LFPG',  # Verified 2026-02-26
+    'Buenos Aires': 'SAEZ',  # Verified 2026-02-26
+    'Toronto':      'CYYZ',
+    'Ankara':       'LTAC',
+}
+
+def extract_icao_from_market(market_data: dict) -> str | None:
+    """
+    Parse the Wunderground ICAO station code from a Polymarket market description.
+
+    The resolution text contains a URL like:
+      https://www.wunderground.com/history/daily/us/il/chicago/KORD
+      https://www.wunderground.com/history/daily/kr/incheon/RKSI
+
+    Returns the ICAO code (e.g. 'KORD') or None if not found.
+    """
+    text = (
+        market_data.get('description', '') or
+        market_data.get('rules', '') or
+        market_data.get('resolution_source', '') or
+        ''
+    )
+
+    match = re.search(
+        r'wunderground\.com/history/\w+/(?:[^/]+/)+([A-Z][A-Z0-9]{3})',
+        text,
+    )
+    if match:
+        return match.group(1)
+    return None
+
 
 def load_config():
     """Load API configuration."""
@@ -374,7 +442,7 @@ def get_forecast_kma(lat, lon, date):
 # Ensemble Forecasting
 # ============================================================================
 
-def get_ensemble_forecast(lat, lon, date, is_us=False, local_source=None, city_name=None):
+def get_ensemble_forecast(lat, lon, date, is_us=False, local_source=None, city_name=None, icao=None):
     """
     Get ensemble forecast from all available sources.
 
@@ -382,6 +450,9 @@ def get_ensemble_forecast(lat, lon, date, is_us=False, local_source=None, city_n
       US markets:              noaa=40%, visual_crossing=35%, open_meteo=25%
       Non-US with local:       local_national=50%, open_meteo=25%, visual_crossing=25%
       Non-US without local:    open_meteo=50%, visual_crossing=50%
+
+    METAR observation (if icao provided): added as an extra source with
+    weight 0.3 when <6h to resolution, 0.1 otherwise.
 
     Disagreement flag: if local source disagrees with global average by >2°C,
     confidence is capped at 0.50 (effectively blocks trade at 80% threshold).
@@ -417,6 +488,34 @@ def get_ensemble_forecast(lat, lon, date, is_us=False, local_source=None, city_n
 
     all_forecasts = global_forecasts + ([local_forecast] if local_forecast else [])
 
+    # Fetch METAR observation if station code available
+    metar_forecast = None
+    metar_weight = 0.0
+    if HAS_METAR and icao:
+        try:
+            metar = get_metar_observation(icao)
+            if metar and metar["age_minutes"] < 90:
+                # Compute hours to resolution: market resolves at end of target date (midnight UTC next day)
+                now_utc = datetime.now(_tz.utc)
+                if hasattr(date, 'replace'):
+                    resolve_dt = date.replace(hour=23, minute=59, second=59, tzinfo=_tz.utc)
+                else:
+                    resolve_dt = now_utc  # fallback — shouldn't happen
+                hours_to_res = max(0, (resolve_dt - now_utc).total_seconds() / 3600)
+
+                metar_weight = 0.3 if hours_to_res < 6 else 0.1
+                metar_forecast = {
+                    "source": "metar_obs",
+                    "high_c": metar["temp_c"],
+                    "low_c": None,
+                    "high_f": metar["temp_f"],
+                    "low_f": None,
+                    "is_local": True,
+                }
+                all_forecasts.append(metar_forecast)
+        except Exception:
+            pass
+
     if not all_forecasts:
         return None
 
@@ -439,6 +538,10 @@ def get_ensemble_forecast(lat, lon, date, is_us=False, local_source=None, city_n
             "open_meteo":      0.50,
             "visual_crossing": 0.50,
         }
+
+    # Add METAR observation weight (additive — doesn't replace other sources)
+    if metar_forecast:
+        w["metar_obs"] = metar_weight
 
     available_sources = [f["source"] for f in all_forecasts]
     total_weight = sum(w.get(s, 0) for s in available_sources)
@@ -635,7 +738,14 @@ def parse_weather_event(event):
     # Check first market question for unit
     first_q = markets[0].get("question", "").lower()
     is_celsius = "°c" in first_q
-    
+
+    # Extract ICAO from first market description (all markets in an event share the same station)
+    icao = extract_icao_from_market(markets[0])
+    if not icao:
+        # Fallback to static map
+        city_name = city_info["city"]
+        icao = ICAO_FALLBACK.get(city_name) or ICAO_FALLBACK.get(city_name.title())
+
     markets_data = []
     for market in markets:
         question = market.get("question", "")
@@ -690,6 +800,7 @@ def parse_weather_event(event):
         "local_source": city_info.get("local_source"),
         "date": city_info["date"],
         "is_celsius": is_celsius,
+        "icao": icao,
         "markets": sorted(markets_data, key=lambda x: x["temp_value"] if x["temp_value"] is not None else 999),
     }
 
@@ -746,6 +857,7 @@ def analyze_weather_event(event_data):
         event_data["is_us"],
         local_source=event_data.get("local_source"),
         city_name=event_data["city"],
+        icao=event_data.get("icao"),
     )
     
     if not forecast:
@@ -822,6 +934,7 @@ def analyze_weather_event(event_data):
             "expected_value": ev,
             "liquidity": market["liquidity"],
             "url": f"https://polymarket.com/event/{event_data['slug']}",
+            "icao": event_data.get("icao"),
             "individual_forecasts": forecast.get("individual", []),
         })
     
@@ -893,6 +1006,19 @@ def test_apis():
     ensemble_au = get_ensemble_forecast(lat_au, lon_au, test_date, is_us=False, local_source="bom")
     if ensemble_au:
         print(f"  Ensemble (AU):  High: {ensemble_au['high_c']:.1f}°C  conf={ensemble_au['confidence']*100:.0f}%  sources={ensemble_au['sources']}")
+
+    # METAR test
+    if HAS_METAR:
+        print("\n--- METAR Observation Test ---")
+        for test_icao in ["KLGA", "KORD", "SBGR"]:
+            metar = get_metar_observation(test_icao)
+            if metar:
+                print(f"  {test_icao}: {metar['temp_c']:.1f}°C / {metar['temp_f']:.1f}°F  "
+                      f"age={metar['age_minutes']}min  source={metar['source']}")
+            else:
+                print(f"  {test_icao}: unavailable")
+    else:
+        print("\n--- METAR: metar_source module not available ---")
 
     print("\nAPI test complete")
 
