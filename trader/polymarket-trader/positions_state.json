@@ -75,6 +75,63 @@
       "forecast_sources": "open_meteo,visual_crossing,noaa",
       "icao": "",
       "topped_up": false
+    },
+    {
+      "market_name": "Will the highest temperature in Paris be 15\u00b0C on February 27?",
+      "condition_id": "0xbc833b47dfd00c1e3e6f03697eea6e9b94c0113248f1c725e6ed00cd56270454",
+      "token_id": "80022914629693500034531559717336625116350829805239985450561917889507533769353",
+      "side": "NO",
+      "entry_price": 0.69,
+      "shares": 7.25,
+      "cost_basis": 5.0024999999999995,
+      "entry_date": "1772109401",
+      "order_id": "0xaa451b9f18db2a311874a5dfa875ad2142863953d60a0f15d0fcbd1f0703de8c",
+      "original_edge": 25.48,
+      "threshold_temp_f": 0.0,
+      "city": "Paris",
+      "market_date": "2026-02-27",
+      "is_us_market": false,
+      "forecast_sources": "open_meteo,visual_crossing,metar_obs",
+      "icao": "LFPG",
+      "topped_up": false
+    },
+    {
+      "market_name": "Will the highest temperature in Wellington be 17\u00b0C on February 27?",
+      "condition_id": "0xcf40ec24218c386576af2260f751578ffaa9047b3551c6a29bd65be7fdaf18be",
+      "token_id": "83990847110819955884564634640936639276252675679406286789191502665743350021488",
+      "side": "NO",
+      "entry_price": 0.7,
+      "shares": 7.14,
+      "cost_basis": 4.997999999999999,
+      "entry_date": "1772108341",
+      "order_id": "0x82d277a085d9bfa4696da99cb11c8cae3e4bd3fcb2fcf9270bf3ce3c895d01ae",
+      "original_edge": 23.75,
+      "threshold_temp_f": 0.0,
+      "city": "Wellington",
+      "market_date": "2026-02-27",
+      "is_us_market": false,
+      "forecast_sources": "open_meteo,visual_crossing,metservice,metar_obs",
+      "icao": "NZWN",
+      "topped_up": false
+    },
+    {
+      "market_name": "Will the highest temperature in Wellington be 16\u00b0C on February 27?",
+      "condition_id": "0xd11f39b58c10c7c9d66c469f9db012c9970781c5b0148b84f8d17f204af75268",
+      "token_id": "45564892950460609248876022131981787064382478665256872362891232449288039016354",
+      "side": "NO",
+      "entry_price": 0.48,
+      "shares": 10.42,
+      "cost_basis": 5.0016,
+      "entry_date": "1772109824",
+      "order_id": "0x85f15dbc6147528dc1460de7929868651ce58fba2d24726bc72226c1e11ef42a",
+      "original_edge": 20.899999999999995,
+      "threshold_temp_f": 0.0,
+      "city": "Wellington",
+      "market_date": "2026-02-27",
+      "is_us_market": false,
+      "forecast_sources": "open_meteo,visual_crossing,metservice,metar_obs",
+      "icao": "NZWN",
+      "topped_up": false
     }
   ],
   "exits": [
@@ -124,5 +181,5 @@
       "reason": "Time exit: -10.7h to resolution"
     }
   ],
-  "last_updated": "2026-02-26T22:12:10.929417"
+  "last_updated": "2026-02-27T00:07:42.622042"
 }
