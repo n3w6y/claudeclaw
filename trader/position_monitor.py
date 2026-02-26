@@ -1,316 +1,290 @@
 #!/usr/bin/env python3
 """
-POSITION THESIS MONITORING
+Position Monitor — 10-minute cron cycle
 
-Monitors active positions every 4 hours by re-checking forecast data.
-Exits positions if forecast thesis breaks (edge drops below 5%).
+Checks exit conditions on all open positions and unfilled GTC orders.
+Does NOT scan for new opportunities or place new buy orders.
+Runs via cron every 10 minutes alongside the main 2-hour trader loop.
 """
 
-import sys
 import json
-from datetime import datetime, timedelta
+import os
+import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).parent / "polymarket-trader" / "scripts"
-sys.path.insert(0, str(SCRIPT_DIR))
+# ── Path setup ───────────────────────────────────────────────────────────
+TRADER_DIR = Path(__file__).parent
+SCRIPTS_DIR = TRADER_DIR / "polymarket-trader" / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
 
-from polymarket_api import get_client, get_open_orders
-from weather_arb import get_weather_events, parse_weather_event, analyze_weather_event, get_ensemble_forecast
+from dotenv import load_dotenv
+load_dotenv(os.path.expanduser("~/.tinyclaw/polymarket.env"))
 
-JOURNAL_DIR = Path(__file__).parent / "polymarket-trader" / "journal"
-POSITIONS_FILE = Path(__file__).parent / "polymarket-trader" / "cache" / "active_positions.json"
+from polymarket_api import get_client, cancel_order
+from weather_arb import (
+    get_ensemble_forecast, prepare_forecasts_for_market, WEATHER_CITIES,
+)
+from early_exit_manager import PositionTracker, execute_full_exit
 
-def load_active_positions():
-    """Load active positions from cache."""
-    if not POSITIONS_FILE.exists():
-        return []
+from autonomous_trader_v2 import (
+    check_exit_triggers, check_consensus_hold, recalculate_edge,
+    get_batch_prices, parse_resolution_time, hours_to_resolution,
+    POSITIONS_FILE, OPEN_ORDERS_FILE, TRADING_STATE_FILE,
+    load_open_orders, save_open_orders,
+)
 
-    with open(POSITIONS_FILE) as f:
-        return json.load(f)
+# ── Constants ────────────────────────────────────────────────────────────
+LOCK_FILE = Path(os.path.expanduser("~/.tinyclaw/trader.lock"))
+LOG_FILE = Path(os.path.expanduser("~/.tinyclaw/logs/position_monitor.log"))
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-def save_active_positions(positions):
-    """Save active positions to cache."""
-    POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(POSITIONS_FILE, 'w') as f:
-        json.dump(positions, indent=2, fp=f)
 
-def get_todays_log():
-    """Get today's log file path."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    return JOURNAL_DIR / f"{today}.md"
+# ── Logging ──────────────────────────────────────────────────────────────
+def log(msg: str):
+    """Single-line structured log entry."""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] POSITION_MONITOR | {msg}"
+    print(line)
+    with open(LOG_FILE, "a") as f:
+        f.write(line + "\n")
 
-def log_monitor_cycle(results, timestamp):
-    """Log monitoring results to daily journal."""
-    log_file = get_todays_log()
 
-    with open(log_file, 'a') as f:
-        f.write(f"\n## POSITION MONITOR - {timestamp.strftime('%H:%M:%S')}\n\n")
-
-        if not results:
-            f.write("No active positions to monitor.\n\n")
-            return
-
-        # Table header
-        f.write("| Market | Entry Price | Current Price | Original Edge | Current Edge | Forecast Change | Action |\n")
-        f.write("|--------|-------------|---------------|---------------|--------------|-----------------|--------|\n")
-
-        for r in results:
-            f.write(f"| {r['market']} | {r['entry_price']}¢ | {r['current_price']}¢ | "
-                   f"{r['original_edge']:.1f}% | {r['current_edge']:.1f}% | "
-                   f"{r['forecast_change']} | {r['action']} |\n")
-
-        f.write("\n### Forecast Details\n\n")
-
-        for r in results:
-            if r.get('forecast_details'):
-                f.write(f"**{r['market']}**: {r['forecast_details']}\n\n")
-
-def monitor_position(position, events):
-    """
-    Monitor a single position against fresh forecast data.
-
-    Returns dict with:
-    - action: HOLD, EXIT, STRENGTHEN
-    - current_edge: recalculated edge
-    - forecast_change: description of change
-    """
-    city = position['city']
-    date_str = position['date']
-    question = position['question']
-    original_edge = position['edge']
-    entry_price = position['price']
-    side = position['side']
-
-    # Find the market
-    market_data = None
-    for event in events:
-        parsed = parse_weather_event(event)
-        if not parsed or parsed['city'].lower() != city.lower():
-            continue
-        if parsed['date'].strftime('%Y-%m-%d') != date_str:
-            continue
-
-        # Find matching question
-        for market in parsed.get('markets', []):
-            if market.get('question') == question:
-                market_data = market
-                break
-
-        if market_data:
-            break
-
-    if not market_data:
-        return {
-            'action': 'HOLD',
-            'current_edge': original_edge,
-            'current_price': entry_price,
-            'forecast_change': 'Market not found',
-            'forecast_details': None
-        }
-
-    # Get fresh forecast
-    parsed = parse_weather_event(event)
-    opps = analyze_weather_event(parsed)
-
-    # Find the specific opportunity
-    current_opp = None
-    for opp in opps:
-        if opp['market_question'] == question:
-            current_opp = opp
-            break
-
-    if not current_opp:
-        return {
-            'action': 'HOLD',
-            'current_edge': original_edge,
-            'current_price': entry_price,
-            'forecast_change': 'Unable to recalculate',
-            'forecast_details': None
-        }
-
-    # Compare forecasts
-    original_temp = position.get('forecast_temp')
-    current_temp = current_opp.get('forecast_temp')
-    current_edge = current_opp.get('confidence_adjusted_edge')
-    current_price = current_opp['market_yes_price'] if side == 'YES' else current_opp['market_no_price']
-
-    # Determine action
-    if abs(current_edge) < 5:
-        action = 'EXIT'
-        forecast_change = f"Edge collapsed: {original_edge:.1f}% → {current_edge:.1f}%"
-        forecast_details = (f"Forecast changed from {original_temp} to {current_temp}. "
-                          f"Edge now {current_edge:.1f}%, below 5% threshold.")
-
-    elif abs(current_edge) > abs(original_edge) + 10:
-        action = 'STRENGTHEN'
-        forecast_change = f"Edge increased: {original_edge:.1f}% → {current_edge:.1f}%"
-        forecast_details = (f"Forecast shifted from {original_temp} to {current_temp}. "
-                          f"Position now stronger.")
-
-    else:
-        action = 'HOLD'
-        temp_change = "unchanged" if original_temp == current_temp else f"{original_temp} → {current_temp}"
-        forecast_change = temp_change
-        forecast_details = None
-
-    return {
-        'action': action,
-        'current_edge': current_edge,
-        'current_price': current_price * 100,  # to cents
-        'forecast_change': forecast_change,
-        'forecast_details': forecast_details,
-        'opportunity': current_opp if action in ['EXIT', 'STRENGTHEN'] else None
-    }
-
-def exit_position(client, position, reason):
-    """Exit a position immediately at market price."""
-    from py_clob_client.clob_types import OrderArgs
-    from py_clob_client.order_builder.constants import SELL, BUY
-    from py_clob_client.clob_types import OrderType
-
-    # Parse token ID
-    token_ids = json.loads(position['token_id'])
-
-    # Determine which token to sell
-    if position['side'] == 'YES':
-        token_to_sell = token_ids[0]  # Selling YES token
-        exit_side = SELL
-    else:
-        token_to_sell = token_ids[1]  # Selling NO token
-        exit_side = SELL
-
+# ── Lock check ───────────────────────────────────────────────────────────
+def is_main_loop_running() -> bool:
+    """Check if the main trader loop lock is active (< 10 min old)."""
+    if not LOCK_FILE.exists():
+        return False
     try:
-        # FOK (Fill-Or-Kill) order at current market price
-        order_args = OrderArgs(
-            token_id=token_to_sell,
-            price=0.50,  # Market order - willing to take any reasonable price
-            size=position['shares'],
-            side=exit_side
-        )
+        age = time.time() - LOCK_FILE.stat().st_mtime
+        return age < 600  # < 10 minutes → active; >= 10 min → stale
+    except Exception:
+        return False
 
-        signed_order = client.create_order(order_args)
-        response = client.post_order(signed_order, orderType=OrderType.FOK)
 
-        return {
-            'success': True,
-            'order_id': response.get('orderID'),
-            'reason': reason
-        }
+# ── State update ─────────────────────────────────────────────────────────
+def update_trading_state(client, tracker: PositionTracker):
+    """Refresh trading_state.json after any exits or cancellations."""
+    try:
+        from polymarket_api import get_balance
+        bal = get_balance(client)
+        balance = bal.get("balance_usdc", 0)
+    except Exception:
+        balance = 0
 
-    except Exception as e:
-        return {
-            'success': False,
-            'error': str(e),
-            'reason': reason
-        }
+    positions = tracker.get_active_positions()
+    open_orders = load_open_orders()
 
-def monitor_all_positions():
-    """Run monitoring cycle for all active positions."""
-    print(f"🔍 POSITION MONITOR")
-    print(f"   Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    state = {}
+    if TRADING_STATE_FILE.exists():
+        try:
+            with open(TRADING_STATE_FILE) as f:
+                state = json.load(f)
+        except Exception:
+            pass
 
-    positions = load_active_positions()
+    from dataclasses import asdict
+    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+    state["balance_usdc"] = balance
+    state["positions"] = [asdict(p) for p in positions]
+    state["open_orders"] = [o for o in open_orders if o.get("status") == "OPEN"]
 
+    with open(TRADING_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2, default=str)
+
+
+# ── Position monitoring ──────────────────────────────────────────────────
+def monitor_positions(client, tracker: PositionTracker):
+    """Check exit conditions on all open positions."""
+    positions = tracker.get_active_positions()
     if not positions:
-        print("   No active positions to monitor.\n")
-        log_monitor_cycle([], datetime.now())
+        log("No active positions")
         return
 
-    print(f"   Monitoring {len(positions)} active position(s)...\n")
-
-    # Filter positions that are within 2 hours of resolution
-    now = datetime.now()
-    positions_to_check = []
+    price_map = get_batch_prices(client, positions)
 
     for pos in positions:
-        resolution_time = datetime.strptime(pos['date'], '%Y-%m-%d')
-        hours_until = (resolution_time - now).total_seconds() / 3600
+        current_price = price_map.get(str(pos.token_id))
+        label = f"{pos.market_name}"
 
-        if hours_until > 2:
-            positions_to_check.append(pos)
+        if current_price is None:
+            log(f"{label} | SKIP | reason=no_price")
+            continue
+
+        cost = pos.cost_basis
+        value = pos.shares * current_price
+        pnl_pct = (value / cost - 1) * 100 if cost > 0 else 0
+
+        # ── Priority 0: Consensus Hold ────────────────────────────
+        consensus_hold = False
+        try:
+            pos_city = getattr(pos, "city", "")
+            pos_is_us = getattr(pos, "is_us_market", False)
+            market_date_str = getattr(pos, "market_date", "")
+
+            pos_lat = pos_lon = pos_local_source = None
+            for c_name, lat, lon, is_us, local_source in WEATHER_CITIES:
+                if c_name.lower() == pos_city.lower() or c_name.title() == pos_city:
+                    pos_lat, pos_lon = lat, lon
+                    pos_local_source = local_source
+                    break
+
+            if pos_lat is not None:
+                pos_date = parse_resolution_time(market_date_str)
+                forecast_date = pos_date.replace(tzinfo=None).date()
+                forecast_date_dt = datetime.combine(forecast_date, datetime.min.time())
+                ensemble = get_ensemble_forecast(
+                    pos_lat, pos_lon, forecast_date_dt,
+                    is_us=pos_is_us,
+                    local_source=pos_local_source,
+                    city_name=pos_city,
+                    icao=getattr(pos, "icao", None) or None,
+                )
+                if ensemble:
+                    indiv = ensemble.get("individual", [])
+                    if indiv:
+                        converted = prepare_forecasts_for_market(
+                            indiv, is_us_market=pos_is_us
+                        )
+                        threshold_raw = getattr(pos, "threshold_temp_f", None)
+                        if threshold_raw and pos_is_us:
+                            threshold = threshold_raw
+                        elif threshold_raw and not pos_is_us:
+                            threshold = (threshold_raw - 32) * 5 / 9
+                        else:
+                            threshold = None
+
+                        if threshold is not None:
+                            consensus_hold, _ = check_consensus_hold(
+                                pos, converted, threshold, pos_is_us, current_price
+                            )
+        except Exception as e:
+            log(f"{label} | WARN | consensus_check_error: {e}")
+
+        if consensus_hold:
+            edge = recalculate_edge(pos, current_price)
+            log(f"{label} | HOLD | reason=consensus_hold | edge={edge:.1f}% | pnl={pnl_pct:+.1f}%")
+            continue
+
+        # ── Priorities 1-4: Exit triggers ─────────────────────────
+        trigger, reason = check_exit_triggers(pos, current_price)
+
+        if trigger:
+            exit_record = execute_full_exit(client, pos, current_price, reason, tracker)
+            if exit_record:
+                pnl = exit_record.pnl
+                log(f"{label} | SELL | reason={trigger} | entry={pos.entry_price:.4f} | exit={current_price:.4f} | pnl=${pnl:+.2f}")
+            else:
+                log(f"{label} | SELL_FAILED | reason={trigger} | entry={pos.entry_price:.4f}")
         else:
-            print(f"   ⏭️  Skipping {pos['market']} - resolves in {hours_until:.1f}h\n")
+            edge = recalculate_edge(pos, current_price)
+            log(f"{label} | HOLD | reason=no_trigger | edge={edge:.1f}% | pnl={pnl_pct:+.1f}%")
 
-    if not positions_to_check:
-        print("   All positions resolving soon - skipping checks.\n")
+
+# ── GTC order monitoring ─────────────────────────────────────────────────
+def monitor_orders(client):
+    """Check unfilled GTC orders for cancellation conditions."""
+    orders = load_open_orders()
+    live_orders = [o for o in orders if o.get("status") == "OPEN"]
+    if not live_orders:
+        log("No open GTC orders")
         return
 
-    # Fetch current market data
-    events = get_weather_events(days_ahead=3)
+    changed = False
 
-    results = []
-    actions_taken = []
-    client = None
+    for order in live_orders:
+        oid = order.get("order_id", "?")
+        market = order.get("question", order.get("market", "?"))
+        order_price = order.get("price", 0)
+        token_id = order.get("token_id", "")
+        label = f"{market} order"
 
-    for pos in positions_to_check:
-        print(f"   Checking {pos['market']}...")
+        # ── Cancel if resolution < 2 hours away ──────────────────
+        market_date = order.get("date", "")
+        hrs = hours_to_resolution(market_date) if market_date else None
 
-        monitor_result = monitor_position(pos, events)
-
-        result_row = {
-            'market': pos['market'],
-            'entry_price': pos['price'] * 100,
-            'current_price': monitor_result['current_price'],
-            'original_edge': pos['edge'],
-            'current_edge': monitor_result['current_edge'],
-            'forecast_change': monitor_result['forecast_change'],
-            'action': monitor_result['action'],
-            'forecast_details': monitor_result['forecast_details']
-        }
-
-        results.append(result_row)
-
-        # Take action if needed
-        if monitor_result['action'] == 'EXIT':
-            if not client:
-                client = get_client()
-
-            print(f"   ⚠️  EXITING: {monitor_result['forecast_change']}")
-            exit_result = exit_position(client, pos, monitor_result['forecast_details'])
-
-            if exit_result['success']:
-                print(f"   ✅ Position exited: {exit_result['order_id']}")
-                actions_taken.append({
-                    'position': pos['market'],
-                    'action': 'EXITED',
-                    'reason': exit_result['reason']
-                })
-                # Remove from active positions
-                positions.remove(pos)
+        if hrs is not None and hrs < 2:
+            result = cancel_order(client, oid)
+            if result.get("success"):
+                order["status"] = "CANCELLED"
+                order["cancellation_reason"] = "RESOLUTION_IMMINENT"
+                order["cancellation_time"] = datetime.now(timezone.utc).isoformat()
+                changed = True
+                log(f"{label} | CANCEL | reason=resolution_imminent ({hrs:.1f}h) | order_px={order_price:.4f}")
             else:
-                print(f"   ❌ Exit failed: {exit_result['error']}")
+                log(f"{label} | CANCEL_FAILED | reason=resolution_imminent | error={result.get('error', '?')[:80]}")
+            continue
 
-        elif monitor_result['action'] == 'STRENGTHEN':
-            print(f"   📈 STRENGTHEN: {monitor_result['forecast_change']}")
-            actions_taken.append({
-                'position': pos['market'],
-                'action': 'STRENGTHEN',
-                'details': monitor_result['forecast_details']
-            })
+        # ── Fetch order book for price checks ─────────────────────
+        try:
+            ob = client.get_order_book(str(token_id))
+            asks = ob.asks or []
+            bids = ob.bids or []
+            best_ask = float(asks[0].price) if asks else None
+            best_bid = float(bids[0].price) if bids else None
 
-        else:
-            print(f"   ✅ HOLD: {monitor_result['forecast_change']}")
+            # Wide spread → illiquid, warn but don't cancel
+            if best_bid and best_ask:
+                spread = best_ask - best_bid
+                if spread > 0.40:
+                    log(f"{label} | WARN | reason=illiquid_market (spread {spread*100:.0f}¢) | order_px={order_price:.4f}")
+                    continue
 
-        print()
+            # Cancel if market moved >15% against the order
+            if best_ask and best_ask > order_price * 1.15:
+                result = cancel_order(client, oid)
+                if result.get("success"):
+                    order["status"] = "CANCELLED"
+                    order["cancellation_reason"] = "MARKET_MOVED_AGAINST"
+                    order["cancellation_time"] = datetime.now(timezone.utc).isoformat()
+                    changed = True
+                    log(f"{label} | CANCEL | reason=market_moved_against | order_px={order_price:.4f} | market_px={best_ask:.4f}")
+                else:
+                    log(f"{label} | CANCEL_FAILED | reason=market_moved | error={result.get('error', '?')[:80]}")
+            else:
+                log(f"{label} | KEEP | order_px={order_price:.4f} | ask={best_ask or 'N/A'}")
 
-    # Save updated positions
-    save_active_positions(positions)
+        except Exception as e:
+            log(f"{label} | ERROR | {str(e)[:100]}")
 
-    # Log results
-    log_monitor_cycle(results, datetime.now())
+    if changed:
+        save_open_orders(orders)
 
-    print(f"   📝 Monitor cycle logged to {get_todays_log()}")
 
-    if actions_taken:
-        print(f"\n   Actions taken:")
-        for action in actions_taken:
-            print(f"   - {action['action']}: {action['position']}")
-
-    print()
-
+# ── Main ─────────────────────────────────────────────────────────────────
 def main():
-    """Run position monitoring."""
-    monitor_all_positions()
+    if is_main_loop_running():
+        log("Skipping — main loop lock active")
+        return
+
+    log("Starting cycle")
+
+    try:
+        client = get_client()
+    except Exception as e:
+        log(f"Failed to connect: {e}")
+        return
+
+    tracker = PositionTracker(POSITIONS_FILE)
+
+    try:
+        monitor_positions(client, tracker)
+    except Exception as e:
+        log(f"Position monitoring error: {e}")
+
+    try:
+        monitor_orders(client)
+    except Exception as e:
+        log(f"Order monitoring error: {e}")
+
+    try:
+        update_trading_state(client, tracker)
+    except Exception as e:
+        log(f"State update error: {e}")
+
+    log("Cycle complete")
+
 
 if __name__ == "__main__":
     main()

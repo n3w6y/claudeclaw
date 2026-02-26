@@ -47,6 +47,7 @@ TRADING_STATE_FILE = STATE_DIR / "trading_state.json"
 SCAN_DETAILS_FILE  = STATE_DIR / "scan_details.jsonl"
 
 JOURNAL_DIR.mkdir(exist_ok=True)
+LOCK_FILE = Path(os.path.expanduser("~/.tinyclaw/trader.lock"))
 
 
 # ---------------------------------------------------------------------------
@@ -1256,7 +1257,24 @@ def update_state(client, tracker: PositionTracker):
 # Main
 # ---------------------------------------------------------------------------
 
+def _write_lock():
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LOCK_FILE.write_text(datetime.now(timezone.utc).isoformat())
+
+def _remove_lock():
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 def main():
+    _write_lock()
+    try:
+        _main_inner()
+    finally:
+        _remove_lock()
+
+def _main_inner():
     # STEP 1: Startup + sync check
     client, balance_usdc, tracker, open_orders = startup()
 
