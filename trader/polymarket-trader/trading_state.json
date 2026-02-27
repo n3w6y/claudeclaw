@@ -1,8 +1,36 @@
 {
-  "last_updated": "2026-02-27T09:50:02.882777+00:00",
+  "last_updated": "2026-02-27T10:50:06.470602+00:00",
   "wallet": "0x8DE0...9bD1",
-  "balance_usdc": 31.132065,
-  "open_orders": [],
+  "balance_usdc": 26.168865,
+  "open_orders": [
+    {
+      "order_id": "0xea990581aad8c20be576927b37c9336ddffbac06e95a453aba41ecdba462f68b",
+      "condition_id": "0xd6103b206f8cb4730add4d4fee1d027b73cbf34b9656d9fb887e32f4200895a3",
+      "event_id": "231942",
+      "token_id": "67864558209674244680195616319821999443082376985569012542972874194782783555871",
+      "market": "Paris - 2026-02-28",
+      "city": "Paris",
+      "date": "2026-02-28",
+      "question": "Will the highest temperature in Paris be 12\u00b0C on February 28?",
+      "side": "NO",
+      "price": 0.665,
+      "size": 7.52,
+      "amount": 5.0,
+      "edge": 27.929999999999993,
+      "conf": 0.98,
+      "sources": [
+        "open_meteo",
+        "visual_crossing",
+        "metar_obs"
+      ],
+      "forecast_temp": "13.4\u00b0C (56.1\u00b0F)",
+      "temp_bucket": "12\u00b0C",
+      "icao": "LFPG",
+      "time_placed": "2026-02-27T10:35:27.878650+00:00",
+      "ttl_expiry": "2026-02-27T11:05:27.878650+00:00",
+      "status": "OPEN"
+    }
+  ],
   "positions": [],
   "strategy": {
     "min_edge_pct": 20.0,
