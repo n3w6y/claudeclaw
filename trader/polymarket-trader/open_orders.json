@@ -662,6 +662,8 @@
     "icao": "LFPG",
     "time_placed": "2026-02-27T18:47:28.120751+00:00",
     "ttl_expiry": "2026-02-27T19:17:28.120751+00:00",
-    "status": "OPEN"
+    "status": "EXPIRED",
+    "cancellation_reason": "TTL_EXPIRED",
+    "cancellation_time": "2026-02-27T19:20:04.643316+00:00"
   }
 ]
