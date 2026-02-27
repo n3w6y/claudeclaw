@@ -1,8 +1,36 @@
 {
-  "last_updated": "2026-02-27T17:50:04.698299+00:00",
+  "last_updated": "2026-02-27T18:50:06.208575+00:00",
   "wallet": "0x8DE0...9bD1",
   "balance_usdc": 11.169865,
-  "open_orders": [],
+  "open_orders": [
+    {
+      "order_id": "0x07af485aad68cedfb6e9243d23addabdf0cc03aaa6152c99f9b4e8d4d0c0566b",
+      "condition_id": "0x51ae4fb0493f8b099255f15728ad08b07914342ea3693ffe3825c7ac1dd5bd19",
+      "event_id": "234207",
+      "token_id": "84078685719025866262531886773089276435901235851370558042125128848076634107320",
+      "market": "Paris - 2026-03-01",
+      "city": "Paris",
+      "date": "2026-03-01",
+      "question": "Will the highest temperature in Paris be 13\u00b0C on March 1?",
+      "side": "NO",
+      "price": 0.675,
+      "size": 7.41,
+      "amount": 5.0,
+      "edge": 26.949999999999992,
+      "conf": 0.98,
+      "sources": [
+        "open_meteo",
+        "visual_crossing",
+        "metar_obs"
+      ],
+      "forecast_temp": "11.9\u00b0C (53.4\u00b0F)",
+      "temp_bucket": "13\u00b0C",
+      "icao": "LFPG",
+      "time_placed": "2026-02-27T18:47:28.120751+00:00",
+      "ttl_expiry": "2026-02-27T19:17:28.120751+00:00",
+      "status": "OPEN"
+    }
+  ],
   "positions": [],
   "strategy": {
     "min_edge_pct": 20.0,
