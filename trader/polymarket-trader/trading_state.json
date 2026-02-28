@@ -1,7 +1,7 @@
 {
-  "last_updated": "2026-02-28T06:50:05.240814+00:00",
+  "last_updated": "2026-02-28T07:50:12.584453+00:00",
   "wallet": "0x8DE0...9bD1",
-  "balance_usdc": 28.832365,
+  "balance_usdc": 0,
   "open_orders": [],
   "positions": [],
   "strategy": {
